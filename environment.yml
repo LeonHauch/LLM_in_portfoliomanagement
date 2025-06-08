@@ -1,0 +1,20 @@
+name: fr_sent_ml
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pandas
+  - numpy
+  - scipy
+  - scikit-learn
+  - jupyterlab
+  - gym
+  - transformers
+  - python-dotenv
+  - black
+  - flake8
+  - pytest
+  - pip
+  - pip:
+      - datasets 
+      - accelerate  
