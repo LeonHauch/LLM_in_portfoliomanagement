@@ -1,4 +1,4 @@
-# French RL Sentiment Portfolio
+# LLM-sentiment enhanced RL framework for portfolio management in French stock market
 
 ## Project Overview
 
