@@ -289,9 +289,11 @@ class PortfolioEnv(gym.Env):
         # Initialize weights (equal weight or cash-heavy)
         action_dim = self.n_assets + (1 if self.cash_weight else 0)
         if self.cash_weight:
-            # Start with more cash
+        # Start with small equal weights plus remaining in cash, normalized to sum 1
             self.current_weights = np.ones(action_dim) * 0.1
-            self.current_weights[-1] = 0.9 - np.sum(self.current_weights[:-1])  # Remaining to cash
+            self.current_weights[-1] = 0.1  # temporary
+            self.current_weights /= np.sum(self.current_weights)  # normalize to sum 1
+
         else:
             self.current_weights = np.ones(self.n_assets) / self.n_assets
         
