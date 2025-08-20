@@ -1,37 +1,15 @@
-name: Python CI
+name: Tests
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+on: [push, pull_request]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. Checkout code
-      - uses: actions/checkout@v3
-
-      # 2. Set up Miniconda and install mamba
-      - name: Setup Miniconda
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          auto-update-conda: false
-          python-version: 3.10
-          use-mamba: true
-          activate-environment: fr_sent_ml
-          environment-file: environment.yml
-          mamba-version: latest   # ensures compatibility with Python 3.10
-
-      # 3. Optional: install pip-only packages
-      - name: Install pip packages
-        run: |
-          pip install --upgrade pip
-          pip install datasets accelerate
-
-      # 4. Test environment with pytest
-      - name: Run tests
-        run: |
-          pytest -v
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    - run: |
+        pip install pandas numpy scipy scikit-learn gymnasium transformers pytest datasets accelerate python-dotenv
+    - run: pytest -v
