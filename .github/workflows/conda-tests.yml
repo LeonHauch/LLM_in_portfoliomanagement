@@ -1,35 +1,33 @@
-name: Run Conda Unit Tests
+name: Python CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Set up Miniconda
-      uses: conda-incubator/setup-miniconda@v3
-      with:
-        activate-environment: myenv
-        environment-file: environment.yml
+      - name: Setup Miniconda with Mamba
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: false
+          mamba-version: 1.3.1
+          python-version: 3.10
+          environment-file: environment.yml
+          activate-environment: fr_sent_ml
+          use-mamba: true
 
-        python-version: 3.10 
+      - name: Install pip packages separately
+        run: |
+          pip install --upgrade pip
+          pip install datasets accelerate
 
-
-    - name: Verify environment
-      run: conda info --envs
-
-    - name: Install test dependencies
-      shell: bash -l {0}
-      run: |
-        conda activate myenv
-        pip install pytest
-
-    - name: Run tests with pytest
-      shell: bash -l {0}
-      run: |
-        conda activate myenv
-        pytest tests/
+      - name: Test environment
+        run: |
+          pytest -v
