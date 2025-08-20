@@ -12,4 +12,6 @@ jobs:
         python-version: "3.10"
     - run: |
         pip install pandas numpy scipy scikit-learn gymnasium transformers pytest datasets accelerate python-dotenv
-    - run: pytest -v
+    - run: |
+        export PYTHONPATH="${PYTHONPATH}:."
+        pytest -v
