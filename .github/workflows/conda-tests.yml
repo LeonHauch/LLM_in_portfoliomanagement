@@ -22,6 +22,7 @@ jobs:
           environment-file: environment.yml
           activate-environment: fr_sent_ml
           use-mamba: true
+          verbose: true
 
       - name: Install pip packages separately
         run: |
