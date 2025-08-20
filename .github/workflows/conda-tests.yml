@@ -15,7 +15,11 @@ jobs:
       with:
         activate-environment: myenv
         environment-file: environment.yml
+<<<<<<< HEAD
         python-version: 3.10 
+=======
+        python-version: 3.10  # Optional, overrides env.yml if mismatch
+>>>>>>> b6a10f80c02b774f5153dfc0694d5011ccc1379f
         auto-activate-base: false
 
     - name: Verify environment
