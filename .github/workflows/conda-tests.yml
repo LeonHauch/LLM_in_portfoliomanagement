@@ -11,23 +11,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout repo
       - uses: actions/checkout@v3
 
-      - name: Setup Miniconda with Mamba
+      # 2. Setup Miniconda (no environment creation yet)
+      - name: Setup Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-update-conda: false
-          mamba-version: 1.3.1
           python-version: 3.10
-          environment-file: environment.yml
-          activate-environment: fr_sent_ml
           use-mamba: true
+          mamba-version: 1.4.3
+          conda-remove-defaults: true
 
-      - name: Install pip packages separately
+      # 3. Create a fresh environment with mamba
+      - name: Create conda environment
         run: |
-          pip install --upgrade pip
+          mamba create -y -n fr_sent_ml python=3.10 pandas numpy scipy scikit-learn gym transformers pytest pip
+          conda activate fr_sent_ml
           pip install datasets accelerate
 
-      - name: Test environment
+      # 4. Activate environment
+      - name: Activate conda environment
+        shell: bash -l {0}
         run: |
+          conda activate fr_sent_ml
+          python -c "import sys; print('Python:', sys.version)"
+          python -c "from environment.portfolio_env import PortfolioEnv; print('PortfolioEnv import OK')"
+
+      # 5. Run tests
+      - name: Run pytest
+        shell: bash -l {0}
+        run: |
+          conda activate fr_sent_ml
           pytest -v
