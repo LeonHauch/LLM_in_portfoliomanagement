@@ -18,7 +18,7 @@ def test_training_runs_and_saves(tmp_path):
     - Reloads model and evaluates
     """
     # --- Setup ---
-    data_path = "data/sample.parquet"  # keep a tiny test dataset here
+    data_path = "data/sample/data_ppo_sample.parquet" 
     trainer = PortfolioTrainer(
         config_path=None,
         data_path=data_path
