@@ -63,7 +63,7 @@ def test_predict_after_training(tmp_path):
     """
     Ensure trained PPO model can predict valid actions.
     """
-    data_path = "data/sample.parquet"
+    data_path = "data/sample/data_ppo_sample.parquet.parquet"
     trainer = PortfolioTrainer(data_path=data_path)
 
     trainer.config["training"]["total_timesteps"] = 300
@@ -92,7 +92,7 @@ def test_reproducibility(tmp_path):
     """
     Optional: with fixed seeds, PPO training should be reproducible.
     """
-    data_path = "data/sample.parquet"
+    data_path = "data/sample/data_ppo_sample.parquet.parquet"
 
     # First trainer
     trainer1 = PortfolioTrainer(data_path=data_path)
