@@ -114,7 +114,7 @@ def test_reproducibility(tmp_path):
     model2 = trainer2.train()
 
     env = trainer1.create_vec_env()
-    obs = env.reset(seed=42)
+    obs = env.reset()
 
     a1, _ = model1.predict(obs)
     a2, _ = model2.predict(obs)
