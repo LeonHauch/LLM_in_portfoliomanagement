@@ -6,7 +6,7 @@ from pathlib import Path
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 
-from src.training.train_ppo import PortfolioTrainer
+from src.rl_agent.train_ppo import PortfolioTrainer
 
 @pytest.mark.integration
 def test_training_runs_and_saves(tmp_path):

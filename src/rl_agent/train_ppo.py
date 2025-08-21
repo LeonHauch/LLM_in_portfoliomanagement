@@ -24,7 +24,7 @@ import json
 # Import your custom environment
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-from src.environment.portfolio_env import PortfolioEnv
+from environment.portfolio_env import PortfolioEnv
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
