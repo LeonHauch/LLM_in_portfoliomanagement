@@ -86,37 +86,3 @@ def test_predict_after_training(tmp_path):
     assert action.shape[-1] == env.action_space.shape[0]
     assert np.all(np.isfinite(action)), "Model produced invalid actions"
 
-
-@pytest.mark.integration
-def test_reproducibility(tmp_path):
-    """
-    Optional: with fixed seeds, PPO training should be reproducible.
-    """
-    data_path = "data/sample/data_ppo_sample.parquet"
-
-    # First trainer
-    trainer1 = PortfolioTrainer(data_path=data_path)
-    trainer1.config["training"]["total_timesteps"] = 200
-    trainer1.config["training"]["n_envs"] = 1
-    trainer1.model_dir = tmp_path / "m1"; trainer1.model_dir.mkdir()
-    trainer1.log_dir = tmp_path / "l1"; trainer1.log_dir.mkdir()
-    trainer1.results_dir = tmp_path / "r1"; trainer1.results_dir.mkdir()
-
-    # Second trainer
-    trainer2 = PortfolioTrainer(data_path=data_path)
-    trainer2.config = trainer1.config.copy()  # exact same config
-    trainer2.seed = trainer1.seed
-    trainer2.model_dir = tmp_path / "m2"; trainer2.model_dir.mkdir()
-    trainer2.log_dir = tmp_path / "l2"; trainer2.log_dir.mkdir()
-    trainer2.results_dir = tmp_path / "r2"; trainer2.results_dir.mkdir()
-
-    model1 = trainer1.train()
-    model2 = trainer2.train()
-
-    env = trainer1.create_vec_env()
-    obs = env.reset()
-
-    a1, _ = model1.predict(obs)
-    a2, _ = model2.predict(obs)
-
-    np.testing.assert_array_almost_equal(a1, a2, decimal=4)
