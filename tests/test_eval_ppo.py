@@ -32,7 +32,7 @@ def test_evaluate_and_backtest(monkeypatch, tmp_path, dummy_paths):
         def predict(self, obs, deterministic=True):
             return np.array([0]), None
 
-    monkeypatch.setattr("src.evaluation.eval_ppo.PPO", type("PPO", (), {"load": staticmethod(lambda *a, **k: DummyModel())}))
+    monkeypatch.setattr("src.rl_agent.eval_ppo.PPO", type("PPO", (), {"load": staticmethod(lambda *a, **k: DummyModel())}))
 
     # Dummy environment for evaluate_episodes
     class DummyEvalEnv:
@@ -55,7 +55,7 @@ def test_evaluate_and_backtest(monkeypatch, tmp_path, dummy_paths):
             info = {"portfolio_value": 100000 + self.steps, "weights": [0.5, 0.5], "net_return": 0.01}
             return np.zeros(3), 1.0, False, False, info
 
-    monkeypatch.setattr("src.environment.portfolio_env.PortfolioEnv", DummyEvalEnv)
+    monkeypatch.setattr("environment.portfolio_env.PortfolioEnv", DummyEvalEnv)
 
     evaluator = eval_ppo.PortfolioEvaluator(model_path, data_path, results_dir=tmp_path)
 
@@ -64,7 +64,7 @@ def test_evaluate_and_backtest(monkeypatch, tmp_path, dummy_paths):
     assert metrics["n_episodes"] == 2
 
     # Patch environment for backtest
-    monkeypatch.setattr("src.environment.portfolio_env.PortfolioEnv", DummyBacktestEnv)
+    monkeypatch.setattr("environment.portfolio_env.PortfolioEnv", DummyBacktestEnv)
     backtest_results = evaluator.backtest()
     assert "total_return" in backtest_results
     assert backtest_results["final_value"] > backtest_results["initial_value"]
