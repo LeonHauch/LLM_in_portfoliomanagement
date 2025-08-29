@@ -15,7 +15,7 @@ dependencies:
   - black
   - flake8
   - pytest
-  - pytorch
+  - torch
   - pip
   - pip:
       - datasets 
