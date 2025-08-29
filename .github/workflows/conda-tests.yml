@@ -11,7 +11,7 @@ jobs:
       with:
         python-version: "3.10"
     - run: |
-        pip install pandas numpy scipy scikit-learn seaborn gymnasium pytorch transformers pytest datasets accelerate python-dotenv stable-baselines3[extra] tensorboard
+        pip install pandas numpy scipy scikit-learn seaborn gymnasium torch transformers pytest datasets accelerate python-dotenv stable-baselines3[extra] tensorboard
     - run: |
         export PYTHONPATH="${PYTHONPATH}:."
         pytest -v
