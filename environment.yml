@@ -20,3 +20,5 @@ dependencies:
   - pip:
       - datasets 
       - accelerate
+      - stable-baselines3[extra]
+      - tensorboard

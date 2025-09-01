@@ -1,6 +1,7 @@
 # src/evaluation/eval_ppo.py
 import os
 import numpy as np
+import torch 
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
