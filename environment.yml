@@ -1,6 +1,7 @@
 name: fr_sent_ml
 channels:
   - conda-forge
+  - defaults
 dependencies:
   - python=3.10.*
   - pandas=2.1.0
@@ -15,10 +16,10 @@ dependencies:
   - black
   - flake8
   - pytest
-  - torch
+  - python-dotenv
   - pip
   - pip:
       - datasets 
       - accelerate
-      - stable-baselines3[extra]
+      - stable-baselines3
       - tensorboard
