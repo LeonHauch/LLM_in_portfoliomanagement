@@ -37,7 +37,10 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: eval_p
     class DummyModel:
         device = "cpu"
         def predict(self, obs, deterministic=True):
-            return np.array([0]), None
+            # --- FIX: Return a valid array of weights, not a scalar ---
+            # The real PortfolioEnv expects an action array of a certain size.
+            return np.array([0.2, 0.2, 0.2, 0.2, 0.2]), None
+            # --- END FIX ---
 
     monkeypatch.setattr("src.rl_agent.eval_ppo.PPO", type("PPO", (), {"load": staticmethod(lambda *a, **k: DummyModel())}))
 
