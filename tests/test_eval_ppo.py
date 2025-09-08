@@ -7,14 +7,20 @@ from src.rl_agent import eval_ppo
 
 @pytest.fixture
 def dummy_paths(tmp_path: eval_ppo.Path):
-    """Fixture to provide temporary model/data paths."""
+    """Fixture to provide a temporary model path and the real data path."""
     model_path = tmp_path / "models.sample_model.zip"
-    data_path = tmp_path / "data.sample.data_ppo_sample.parquet"
+    
+    # Correctly point to the real, valid data file
+    data_path = os.path.join(
+        os.path.dirname(__file__), 
+        '..', 
+        'data', 
+        'sample', 
+        'data_ppo_sample.parquet'
+    )
 
-    # Create empty files (content doesn't matter for the model due to monkeypatching,
-    # but we will create content for the data file later in the test)
+    # Create empty model file (content doesn't matter due to monkeypatching)
     model_path.write_text("")
-    data_path.write_text("")
 
     return str(model_path), str(data_path)
 
@@ -26,11 +32,6 @@ def test_model_loading_fails_without_file(dummy_paths: tuple[str, str]):
 
 def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: eval_ppo.Path, dummy_paths: tuple[str, str]):
     model_path, data_path = dummy_paths
-
-    # --- FIX: Create a dummy, valid Parquet data file for the test ---
-    dummy_df = pd.DataFrame({'A': np.random.rand(10), 'B': np.random.rand(10)})
-    dummy_df.to_parquet(data_path)
-    # --- END FIX ---
 
     # Dummy PPO model
     class DummyModel:
