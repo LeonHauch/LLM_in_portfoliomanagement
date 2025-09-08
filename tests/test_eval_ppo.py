@@ -6,10 +6,10 @@ import numpy as np
 from src.rl_agent import eval_ppo
 
 @pytest.fixture
-def dummy_paths(tmp_path):
+def dummy_paths(tmp_path: eval_ppo.Path):
     """Fixture to provide temporary model/data paths."""
-    model_path = tmp_path / "dummy_model.zip"
-    data_path = tmp_path / "dummy_data.parquet"
+    model_path = tmp_path / "models.sample_model.zip"
+    data_path = tmp_path / "data.sample.data_ppo_sample.parquet"
 
     # Create empty files (content doesn't matter due to monkeypatching)
     model_path.write_text("")
@@ -17,13 +17,13 @@ def dummy_paths(tmp_path):
 
     return str(model_path), str(data_path)
 
-def test_model_loading_fails_without_file(dummy_paths):
+def test_model_loading_fails_without_file(dummy_paths: tuple[str, str]):
     model_path, data_path = dummy_paths
     os.remove(model_path)
     with pytest.raises(FileNotFoundError):
         eval_ppo.PortfolioEvaluator(model_path, data_path)
 
-def test_evaluate_and_backtest(monkeypatch, tmp_path, dummy_paths):
+def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: eval_ppo.Path, dummy_paths: tuple[str, str]):
     model_path, data_path = dummy_paths
 
     # Dummy PPO model
