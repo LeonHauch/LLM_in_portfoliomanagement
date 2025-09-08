@@ -1,8 +1,8 @@
-# tests/test_eval_ppo.py
 import os
 import tempfile
 import pytest
 import numpy as np
+import pandas as pd
 from src.rl_agent import eval_ppo
 
 @pytest.fixture
@@ -11,7 +11,8 @@ def dummy_paths(tmp_path: eval_ppo.Path):
     model_path = tmp_path / "models.sample_model.zip"
     data_path = tmp_path / "data.sample.data_ppo_sample.parquet"
 
-    # Create empty files (content doesn't matter due to monkeypatching)
+    # Create empty files (content doesn't matter for the model due to monkeypatching,
+    # but we will create content for the data file later in the test)
     model_path.write_text("")
     data_path.write_text("")
 
@@ -26,6 +27,11 @@ def test_model_loading_fails_without_file(dummy_paths: tuple[str, str]):
 def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: eval_ppo.Path, dummy_paths: tuple[str, str]):
     model_path, data_path = dummy_paths
 
+    # --- FIX: Create a dummy, valid Parquet data file for the test ---
+    dummy_df = pd.DataFrame({'A': np.random.rand(10), 'B': np.random.rand(10)})
+    dummy_df.to_parquet(data_path)
+    # --- END FIX ---
+
     # Dummy PPO model
     class DummyModel:
         device = "cpu"
@@ -36,7 +42,9 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: eval_p
 
     # Dummy environment for evaluate_episodes
     class DummyEvalEnv:
-        def __init__(self, *a, **k): self.steps = 0
+        def __init__(self, data_path=None): 
+            self.steps = 0
+            self.data_path = data_path
         def reset(self, seed=None): return np.zeros(3)
         def step(self, action):
             self.steps += 1
