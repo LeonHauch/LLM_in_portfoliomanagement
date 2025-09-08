@@ -37,16 +37,14 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: eval_p
     class DummyModel:
         device = "cpu"
         def predict(self, obs, deterministic=True):
-            # --- FIX: Return a valid array of weights, not a scalar ---
             # The real PortfolioEnv expects an action array of a certain size.
             return np.array([0.2, 0.2, 0.2, 0.2, 0.2]), None
-            # --- END FIX ---
-
+    
     monkeypatch.setattr("src.rl_agent.eval_ppo.PPO", type("PPO", (), {"load": staticmethod(lambda *a, **k: DummyModel())}))
 
     # Dummy environment for evaluate_episodes
     class DummyEvalEnv:
-        def __init__(self, data_path=None): 
+        def __init__(self, data_path=None):
             self.steps = 0
             self.data_path = data_path
         def reset(self, seed=None): return np.zeros(3)
@@ -67,7 +65,9 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: eval_p
             info = {"portfolio_value": 100000 + self.steps, "weights": [0.5, 0.5], "net_return": 0.01}
             return np.zeros(3), 1.0, False, False, info
 
-    monkeypatch.setattr("environment.portfolio_env.PortfolioEnv", DummyEvalEnv)
+    # --- FIX: Patch the PortfolioEnv class where it is used in the eval_ppo module ---
+    monkeypatch.setattr("src.rl_agent.eval_ppo.PortfolioEnv", DummyEvalEnv)
+    # --- END FIX ---
 
     evaluator = eval_ppo.PortfolioEvaluator(model_path, data_path, results_dir=tmp_path)
 
@@ -76,7 +76,7 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: eval_p
     assert metrics["n_episodes"] == 2
 
     # Patch environment for backtest
-    monkeypatch.setattr("environment.portfolio_env.PortfolioEnv", DummyBacktestEnv)
+    monkeypatch.setattr("src.rl_agent.eval_ppo.PortfolioEnv", DummyBacktestEnv)
     backtest_results = evaluator.backtest()
     assert "total_return" in backtest_results
     assert backtest_results["final_value"] > backtest_results["initial_value"]
