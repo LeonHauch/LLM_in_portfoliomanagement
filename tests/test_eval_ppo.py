@@ -118,7 +118,8 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, 
         
         def step(self, action):
             self.steps += 1
-            done = self.steps >= self.max_steps
+            terminated = self.steps >= self.max_steps
+            truncated = False
             
             print(f"SmartDummyEnv.step: step={self.steps}, action_shape={action.shape if hasattr(action, 'shape') else 'scalar'}")
             
@@ -145,10 +146,10 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, 
                 "step": self.steps
             }
             
-            next_obs = np.random.random(self.obs_shape)
-            reward = 1.0 + 0.1 * np.random.randn()  # Small random reward
+            next_obs = np.random.random(self.obs_shape).astype(np.float32)
+            reward = float(1.0 + 0.1 * np.random.randn())  # Small random reward
             
-            return next_obs, reward, done, info
+            return next_obs, reward, terminated, truncated, info
         
         def close(self):
             pass
