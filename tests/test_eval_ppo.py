@@ -4,6 +4,9 @@ import pytest
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import gymnasium as gym
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.monitor import Monitor
 from src.rl_agent import eval_ppo
 
 @pytest.fixture
@@ -73,8 +76,8 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, 
         device = "cpu"
         
         def predict(self, obs, deterministic=True):
-            # Return action array with correct size
-            action = np.full(action_space_size, 1.0 / action_space_size)
+            # Return action array with correct size and batch dimension (1 env)
+            action = np.full((1, action_space_size), 1.0 / action_space_size)
             print(f"DummyModel predict: obs_shape={obs.shape if hasattr(obs, 'shape') else 'unknown'}, action_shape={action.shape}")
             return action, None
     
@@ -83,8 +86,9 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, 
                        type("PPO", (), {"load": staticmethod(lambda *args, **kwargs: DummyModel())}))
     
     # 4. Create Smart Dummy Environment using real data structure
-    class SmartDummyEvalEnv:
-        def __init__(self, data_path=None, **kwargs):
+    class SmartDummyEvalEnv(gym.Env):
+        def __init__(self, data_path=None, render_mode=None, **kwargs):
+            super().__init__()
             self.steps = 0
             self.data_path = data_path
             self.max_steps = 5  # Short episodes for testing
@@ -104,17 +108,16 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, 
             self.cash_weight = cash_weight
             self.initial_capital = initial_capital
             
-            # Create mock action_space object
-            class MockSpace:
-                def __init__(self, shape):
-                    self.shape = shape
-            self.action_space = MockSpace((action_space_size,))
+            # Define action and observation spaces
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.action_space_size,), dtype=np.float32)
+            self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=self.obs_shape, dtype=np.float32)
         
-        def reset(self, seed=None):
+        def reset(self, seed=None, options=None):
+            super().reset(seed=seed)
             self.steps = 0
-            obs = np.random.random(self.obs_shape)
-            # Return format matching real environment
-            return obs  # eval_ppo.py expects single obs, not tuple
+            obs = np.random.random(self.obs_shape).astype(np.float32)
+            info = {"reset": True}
+            return obs, info
         
         def step(self, action):
             self.steps += 1
@@ -155,16 +158,38 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, 
             pass
     
     # 5. Backtest version with different return format
-    class SmartDummyBacktestEnv(SmartDummyEvalEnv):
-        def __init__(self, data_path=None, **kwargs):
-            super().__init__(data_path, **kwargs)
+    class SmartDummyBacktestEnv(gym.Env):
+        def __init__(self, data_path=None, render_mode=None, **kwargs):
+            super().__init__()
+            self.steps = 0
+            self.data_path = data_path
             self.max_steps = 10  # Longer for backtest
         
-        def reset(self, seed=None):
+            # Load real data for realistic structure
+            if data_path and os.path.exists(data_path):
+                self.real_data = pd.read_parquet(data_path)
+                self.n_data_points = len(self.real_data)
+                print(f"SmartDummyEnv: Loaded {self.n_data_points} data points")
+            else:
+                self.n_data_points = 100
+            
+            # Store expected parameters
+            self.action_space_size = action_space_size
+            self.obs_shape = obs_shape
+            self.asset_symbols = asset_symbols
+            self.cash_weight = cash_weight
+            self.initial_capital = initial_capital
+            
+            # Define action and observation spaces
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.action_space_size,), dtype=np.float32)
+            self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=self.obs_shape, dtype=np.float32)
+        
+        def reset(self, seed=None, options=None):
+            super().reset(seed=seed)
             self.steps = 0
-            obs = np.random.random(self.obs_shape)
+            obs = np.random.random(self.obs_shape).astype(np.float32)
             info = {"reset": True}
-            return obs, info  # Backtest expects tuple format
+            return obs, info
         
         def step(self, action):
             self.steps += 1
@@ -193,10 +218,13 @@ def test_evaluate_and_backtest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, 
                 "step": self.steps
             }
             
-            next_obs = np.random.random(self.obs_shape)
+            next_obs = np.random.random(self.obs_shape).astype(np.float32)
             reward = info["net_return"] * 100  # Scale reward
             
             return next_obs, reward, terminated, truncated, info
+        
+        def close(self):
+            pass
     
     # 6. Patch the PortfolioEnv where it's imported in eval_ppo
     monkeypatch.setattr("src.rl_agent.eval_ppo.PortfolioEnv", SmartDummyEvalEnv)
