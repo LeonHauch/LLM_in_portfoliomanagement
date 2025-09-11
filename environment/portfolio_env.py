@@ -174,6 +174,10 @@ class PortfolioEnv(gym.Env):
         features.extend(self.current_weights)
         
         obs = np.array(features, dtype=np.float32)
+        assert obs.ndim == 1 and obs.shape[0] == self.observation_space.shape[0], \
+            f"Observation shape mismatch: {obs.shape} vs {self.observation_space.shape}"
+        return obs
+
         
         # Normalize if requested
         if self.normalize_observations:
@@ -183,20 +187,30 @@ class PortfolioEnv(gym.Env):
     
     def _process_action(self, action: np.ndarray) -> np.ndarray:
         """Process raw action to valid portfolio weights."""
-        # Apply softmax to ensure weights sum to 1 and are non-negative
-        action = np.clip(action, -10, 10)  # Prevent overflow
-        exp_action = np.exp(action)
-        weights = exp_action / np.sum(exp_action)
+
+        action = np.asarray(action, dtype=np.float64)
+        # If action comes in shape (n_envs, action_dim) and n_envs == 1, squeeze it
+        if action.ndim > 1 and action.shape[0] == 1:
+            action = action[0]
+        # If for some reason action is 2D (n_envs>1), pick the first env (this env is not vectorized internally)
+        if action.ndim > 1:
+            # if you want to fully support vectorized step() you'd need to handle batching; for now handle single env
+            action = action.squeeze()
         
-        # Handle max positions constraint
+        # numeric-stable softmax
+        action = np.clip(action, -50, 50)             # avoid overflow in exp
+        max_a = np.max(action)
+        exp_action = np.exp(action - max_a)
+        weights = exp_action / np.sum(exp_action, axis=-1)
+        
         if self.max_positions is not None and self.max_positions < len(weights):
-            # Keep only top max_positions weights, set others to 0
+                # Keep only top max_positions weights, set others to 0
             top_indices = np.argsort(weights)[-self.max_positions:]
             new_weights = np.zeros_like(weights)
             new_weights[top_indices] = weights[top_indices]
             new_weights = new_weights / np.sum(new_weights)  # Renormalize
             weights = new_weights
-            
+                
         return weights
     
     def _calculate_reward(self, new_weights: np.ndarray) -> float:
@@ -242,6 +256,12 @@ class PortfolioEnv(gym.Env):
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """Execute one step in the environment."""
+        action = np.asarray(action)
+        if action.ndim > 1 and action.shape[0] == 1:
+            action = action[0]
+        if action.ndim != 1:
+            raise ValueError(f"Unexpected action ndim {action.ndim}, action shape: {action.shape}")
+
         # Process action to get valid portfolio weights  
         new_weights = self._process_action(action)
         
