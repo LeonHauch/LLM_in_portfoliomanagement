@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 from typing import Dict, List, Tuple, Optional
+from visualizations import create_visualizations
 
 # Import your custom environment
 import sys
@@ -334,7 +335,7 @@ class PortfolioEvaluatorDebug:
                 net_return = step_info.get('net_return', 0.0)
                 
                 portfolio_values.append(portfolio_value)
-                weights_history.append(weights.copy() if weights else [])
+                weights_history.append(weights.copy() if weights is not None and len(weights) > 0 else [])
                 returns_history.append(net_return)
                 
                 step += 1
@@ -380,7 +381,50 @@ class PortfolioEvaluatorDebug:
             import traceback
             traceback.print_exc()
             return {'error': str(e)}
-    
+    def create_visualizations(self, backtest_results: Dict, save_plots: bool = True):
+        from visualizations import create_visualizations as viz_func
+        viz_func(backtest_results, self.results_dir, self.env_config, 
+                 self.env_info, save_plots)
+        
+    def compare_with_benchmark(self, backtest_results: Dict, 
+                          benchmark_return: float = 0.07) -> Dict:
+        """Compare portfolio performance with a benchmark."""
+        from visualizations import compare_with_benchmark as bench_func
+        return bench_func(backtest_results, self.results_dir, 
+                        self.trading_days_per_year, benchmark_return)
+    def save_results(self, metrics: Dict, backtest_results: Dict, 
+                comparison: Dict = None):
+        """
+        Save all evaluation results to a consolidated JSON file.
+        
+        Args:
+            metrics: Evaluation metrics dictionary
+            backtest_results: Backtest results dictionary
+            comparison: Benchmark comparison dictionary (optional)
+        """
+        logger.info("Saving consolidated results...")
+        
+        try:
+            consolidated = {
+                'timestamp': datetime.now().isoformat(),
+                'model_path': str(self.model_path),
+                'data_path': str(self.data_path),
+                'environment_info': self.env_info,
+                'environment_config': self.env_config,
+                'evaluation_metrics': metrics,
+                'backtest_results': backtest_results,
+                'benchmark_comparison': comparison
+            }
+            
+            # Save consolidated results
+            results_path = self.results_dir / 'consolidated_results.json'
+            with open(results_path, 'w') as f:
+                json.dump(consolidated, f, indent=2, default=str)
+            
+            logger.info(f"💾 Consolidated results saved to: {results_path}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save consolidated results: {e}")
     def run_diagnostic(self):
         """Run comprehensive diagnostic checks."""
         logger.info("🔍 Running diagnostic checks...")
@@ -459,16 +503,17 @@ class PortfolioEvaluatorDebug:
 
 def main():
     """Main function with debugging options."""
-    parser = argparse.ArgumentParser(description='Evaluate trained PPO portfolio model (DEBUG VERSION)')
+    parser = argparse.ArgumentParser(description='Evaluate trained PPO portfolio model')
     parser.add_argument('--model-path', type=str, required=True, help='Path to trained model')
     parser.add_argument('--data-path', type=str, required=True, help='Path to data file')
     parser.add_argument('--results-dir', type=str, default=None, help='Results directory')
-    parser.add_argument('--n-episodes', type=int, default=5, help='Number of episodes (reduced for debugging)')
+    parser.add_argument('--n-episodes', type=int, default=10, help='Number of episodes')
     parser.add_argument('--quick-test', action='store_true', help='Run quick test only')
     parser.add_argument('--diagnostic-only', action='store_true', help='Run diagnostics only')
     parser.add_argument('--max-steps', type=int, default=100, help='Max steps for quick test')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'])
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--no-plots', action='store_true', help='Skip creating plots')
     
     args = parser.parse_args()
     
@@ -482,7 +527,7 @@ def main():
     
     try:
         # Create evaluator
-        logger.info("🚀 Starting debug evaluation...")
+        logger.info("🚀 Starting evaluation...")
         evaluator = PortfolioEvaluatorDebug(
             model_path=args.model_path,
             data_path=args.data_path,
@@ -500,19 +545,49 @@ def main():
         
         if args.quick_test:
             logger.info("Running quick test...")
-            results = evaluator.quick_backtest(max_steps=args.max_steps)
-            if 'error' in results:
-                logger.error(f"Quick test failed: {results['error']}")
+            backtest_results = evaluator.quick_backtest(max_steps=args.max_steps)
+            if 'error' in backtest_results:
+                logger.error(f"Quick test failed: {backtest_results['error']}")
                 return 1
             logger.info("✅ Quick test completed!")
+            
+            # CREATE VISUALIZATIONS
+            if not args.no_plots:
+                logger.info("Creating visualizations...")
+                evaluator.create_visualizations(backtest_results, save_plots=True)
+            
+            # SAVE RESULTS
+            evaluator.save_results({}, backtest_results)
+            
         else:
+            # FULL EVALUATION
             logger.info("Running full evaluation...")
-            results = evaluator.evaluate_episodes_debug(n_episodes=args.n_episodes)
-            if 'error' in results:
-                logger.error(f"Evaluation failed: {results['error']}")
+            metrics = evaluator.evaluate_episodes_debug(n_episodes=args.n_episodes, deterministic=False)
+            if 'error' in metrics:
+                logger.error(f"Evaluation failed: {metrics['error']}")
                 return 1
             logger.info("✅ Evaluation completed!")
+            
+            # RUN BACKTEST
+            logger.info("Running backtest...")
+            backtest_results = evaluator.quick_backtest(max_steps=200)
+            
+            if 'error' in backtest_results:
+                logger.error(f"Backtest failed: {backtest_results['error']}")
+                return 1
+            
+            # CREATE VISUALIZATIONS
+            if not args.no_plots:
+                logger.info("Creating visualizations...")
+                evaluator.create_visualizations(backtest_results, save_plots=True)
+            
+            # BENCHMARK COMPARISON
+            comparison = evaluator.compare_with_benchmark(backtest_results, benchmark_return=0.07)
+            
+            # SAVE ALL RESULTS
+            evaluator.save_results(metrics, backtest_results, comparison)
         
+        logger.info(f"\n✅ All results saved to: {evaluator.results_dir}")
         return 0
         
     except Exception as e:

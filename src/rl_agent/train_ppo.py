@@ -313,7 +313,7 @@ class PortfolioTrainer:
 def main():
     """Main function for command line usage."""
     parser = argparse.ArgumentParser(description='Train PPO for Portfolio Optimization')
-    parser.add_argument('--data-path', type=str, required=True,
+    parser.add_argument('--data-path', type=str, required=False,
                        help='Path to the parquet data file')
     parser.add_argument('--config', type=str, default=None,
                        help='Path to configuration file (YAML or JSON)')
@@ -322,17 +322,17 @@ def main():
     
     args = parser.parse_args()
     
-    # Verify data file exists
-    if not os.path.exists(args.data_path):
-        raise FileNotFoundError(f"Data file not found: {args.data_path}")
-    
-    # Create trainer and run training
+    # Create trainer and run training (this loads config with data_path)
     trainer = PortfolioTrainer(config_path=args.config, data_path=args.data_path)
     
     # Override seed if provided
     if args.seed != 42:
         trainer.config['seed'] = args.seed
         trainer.seed = args.seed
+    
+    # NOW verify data file exists (after trainer has determined the final data_path)
+    if not os.path.exists(trainer.data_path):
+        raise FileNotFoundError(f"Data file not found: {trainer.data_path}")
     
     # Start training
     model = trainer.train()

@@ -1,0 +1,50 @@
+# config_minimal.yaml
+# Minimal configuration for quick training test (5-10 minutes)
+
+seed: 42
+data_path: data/sample/data_ppo_sample.parquet  # Use sample data for speed
+
+# Environment parameters
+env:
+  lookback_window: 60
+  initial_capital: 100000.0
+  transaction_cost: 0.001
+  max_positions: null
+  cash_weight: true
+  normalize_observations: true
+  reward_scaling: 1000.0
+
+# Training parameters - MINIMAL for quick test
+training:
+  total_timesteps: 10000        # 10k instead of 1M (quick but meaningful)
+  learning_rate: 0.0003 
+  n_steps: 512                  # Reduced from 2048 (faster)
+  batch_size: 64
+  n_epochs: 5                   # Reduced from 10 (faster)
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: null
+  n_envs: 2                     # Reduced from 4 (faster)
+  use_multiprocessing: false    # Safer for testing
+
+# Evaluation parameters
+evaluation:
+  eval_freq: 2000               # Evaluate every 2k steps
+  n_eval_episodes: 3            # Reduced from 10 (faster)
+  eval_deterministic: true
+
+# Saving parameters
+saving:
+  save_freq: 5000               # Save checkpoint at 5k steps
+  save_path: models/ppo_minimal_test
+  keep_best_only: false         # Keep all checkpoints for testing
+
+# Logging
+logging:
+  tensorboard: true
+  wandb: false
+  log_interval: 10              # Log every 10 steps
