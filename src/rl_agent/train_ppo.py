@@ -2,6 +2,8 @@
 import os
 import numpy as np
 import pandas as pd
+
+from pathlib import Path
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import (
@@ -33,16 +35,21 @@ logger = logging.getLogger(__name__)
 class PortfolioTrainer:
     """Main trainer class for PPO portfolio optimization."""
     
-    def __init__(self, config_path: str = None, data_path: str = None):
+    def __init__(self, config_path: str = None, data_path: str = None, sentiment_path: str = None):
         """
         Initialize the trainer.
         
         Args:
             config_path: Path to configuration file
             data_path: Path to the parquet data file
+            sentiment_path: Optional path to sentiment CSV file
         """
         self.config = self._load_config(config_path)
         self.data_path = data_path or self.config.get('data_path')
+        self.sentiment_path = sentiment_path or self.config.get('sentiment_path')  # NEW
+        
+        # Prepare data (merge sentiment if provided)
+        self._prepare_data()  # NEW
         
         # Setup directories
         self.setup_directories()
@@ -54,7 +61,74 @@ class PortfolioTrainer:
         np.random.seed(self.seed)
         
         logger.info(f"Trainer initialized with seed: {self.seed}")
+    
+    def _prepare_data(self):
+        """
+        Load market data and optionally merge with sentiment.
+        If sentiment is provided, creates a temporary merged file.
+        """
         
+        # Check if sentiment should be merged
+        if self.sentiment_path and os.path.exists(self.sentiment_path):
+            logger.info(f"📊 Loading sentiment from: {self.sentiment_path}")
+            
+            try:
+                # Load market data
+                market_data = pd.read_parquet(self.data_path)
+                logger.info(f"   Market data shape: {market_data.shape}")
+                
+                # Load sentiment
+                sentiment_data = pd.read_csv(self.sentiment_path)
+                sentiment_data['date'] = pd.to_datetime(sentiment_data['date'])
+                logger.info(f"   Sentiment data shape: {sentiment_data.shape}")
+                
+                # Ensure market data has datetime date column
+                if 'date' in market_data.columns:
+                    market_data['date'] = pd.to_datetime(market_data['date'])
+                
+                # Merge on date and asset
+                merged_data = market_data.merge(
+                    sentiment_data,
+                    on=['date', 'asset'],
+                    how='left'
+                )
+                
+                # Fill missing sentiment with 0 (neutral for days without news)
+                sentiment_cols = [c for c in sentiment_data.columns 
+                                if c not in ['date', 'asset']]
+                for col in sentiment_cols:
+                    merged_data[col] = merged_data[col].fillna(0)
+                    logger.info(f"   Filled {merged_data[col].isna().sum()} missing values in '{col}'")
+                
+                logger.info(f"✅ Merged data shape: {merged_data.shape}")
+                logger.info(f"   Added sentiment columns: {sentiment_cols}")
+                
+                # Create temporary merged file
+                temp_dir = Path(self.data_path).parent / 'temp'
+                temp_dir.mkdir(exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                temp_path = temp_dir / f"merged_with_sentiment_{timestamp}.parquet"
+                merged_data.to_parquet(temp_path)
+                
+                # Update data_path to point to merged file
+                self.original_data_path = self.data_path  # Keep reference to original
+                self.data_path = str(temp_path)
+                
+                logger.info(f"💾 Temporary merged data saved to: {temp_path}")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to merge sentiment data: {e}")
+                logger.info("   Continuing with original data without sentiment")
+                import traceback
+                traceback.print_exc()
+        
+        elif self.sentiment_path:
+            logger.warning(f"⚠️  Sentiment path provided but file not found: {self.sentiment_path}")
+            logger.info("   Training without sentiment features")
+        else:
+            logger.info("📈 Training without sentiment features (none provided)")
+           
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from file or use defaults."""
         default_config = {
@@ -319,11 +393,17 @@ def main():
                        help='Path to configuration file (YAML or JSON)')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed for reproducibility')
+    parser.add_argument('--sentiment-path', type=str, default=None,
+                       help='Optional: Path to sentiment CSV file (date, asset, sentiment)')
     
     args = parser.parse_args()
     
-    # Create trainer and run training (this loads config with data_path)
-    trainer = PortfolioTrainer(config_path=args.config, data_path=args.data_path)
+    
+    trainer = PortfolioTrainer(
+        config_path=args.config, 
+        data_path=args.data_path,
+        sentiment_path=args.sentiment_path
+    )
     
     # Override seed if provided
     if args.seed != 42:
