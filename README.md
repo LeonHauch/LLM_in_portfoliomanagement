@@ -1,234 +1,278 @@
-# LLM-sentiment enhanced RL framework for portfolio management in French stock market
+# LLM-Sentiment Enhanced RL for Portfolio Management (CAC 40)
 
 ## Project Overview
 
-This repository implements a **reinforcement learning (RL)** based portfolio management framework for the French equity market (CAC 40), enhanced with sentiment signals extracted from French financial news via large language models (LLMs).  The primary algorithm is **Proximal Policy Optimization (PPO)**.  Sentiment integration is optional and can be toggled for ablation.
+This repository implements a **reinforcement learning (RL)** portfolio management framework for the French equity market (CAC 40), enhanced with optional sentiment signals extracted from French financial news via large language models.
 
-**Key contributions:**
+The core algorithm is **Proximal Policy Optimization (PPO)** with pluggable policy architectures (MLP, CNN, LSTM). Sentiment integration is toggled via configuration for clean ablation studies.
 
-* End-to-end pipeline from data ingestion (prices + news) to RL training & evaluation
-* Reproducible environment using Conda, GitHub, and best practices
-* Clear separation of raw vs processed data, code modules, and notebooks
-* Statistical evaluation of model performance (Sharpe ratio, drawdown, Welch’s t-test)
+**Key features:**
 
----
-
-## Table of Contents
-
-1. [Repository Structure](#repository-structure)
-2. [Dependencies & Environment Setup](#dependencies--environment-setup)
-3. [Data Acquisition](#data-acquisition)
-4. [Data Preprocessing](#data-preprocessing)
-5. [Training the PPO Agent](#training-the-ppo-agent)
-6. [Evaluation](#evaluation)
-7. [Extending with Sentiment](#extending-with-sentiment)
-8. [Reproducibility & CI](#reproducibility--ci)
-9. [Project Roadmap](#project-roadmap)
-10. [Contributing](#contributing)
-11. [License](#license)
+* End-to-end pipeline: data ingestion, preprocessing, RL training, out-of-sample evaluation
+* Temporal train/test split (default: train 2018-2022, test 2023-2024) to prevent look-ahead bias
+* Classical baselines (equal-weight, buy-and-hold, inverse-volatility) for rigorous comparison
+* CNN and LSTM policy architectures that exploit the temporal structure of observations
+* French-language sentiment via CamemBERT (with FinBERT fallback for comparison)
+* Multi-seed training for statistical significance
+* CI via GitHub Actions
 
 ---
 
 ## Repository Structure
 
 ```text
-fr_sent_ml/
+LLM_in_portfoliomanagement/
 │
 ├── data/
-│   ├── raw/                 # Raw CSVs & Parquet files (prices, news archives)
-│   ├── processed/           # Cleaned, merged datasets (e.g., returns, sentiment)
-│   └── preprocessed/        # Final data for modeling (parquet, CSV)
+│   ├── raw/                     # Per-ticker CSVs from Yahoo Finance
+│   ├── preprocessed/            # Cleaned parquet files (prices, features)
+│   ├── sample/                  # Minimal 2-asset sample for quick tests
+│   └── download_prices.py       # Download CAC 40 price data
 │
-├── notebooks/              # Jupyter notebooks for EDA & preprocessing
-│   └── 01_prepare_data.ipynb
+├── environment/
+│   └── portfolio_env.py         # Custom Gymnasium environment
 │
-├── src/                    # Source code modules
-│   ├── data/               # Scripts to download & preprocess data
-│   │   └── download_prices.py
-│   ├── sentiment/          # Sentiment extraction wrappers (GPT-4 prompts)
-│   ├── rl_agent/           # Environment + PPO training & evaluation
-│   │   ├── portfolio_env.py
-│   │   ├── train_ppo.py
-│   │   └── eval_ppo.py
-│   ├── utils/              # Utility functions (logging, seeding, config)
-│   └── config.yaml         # Hyperparameters and paths
+├── src/
+│   ├── rl_agent/
+│   │   ├── train_ppo.py         # PPO training (split, policy select, multi-seed)
+│   │   ├── eval_ppo.py          # Full evaluation with metrics & visualization
+│   │   ├── eval_ppo_debug.py    # Debug variant with timeouts & diagnostics
+│   │   ├── baselines.py         # Classical portfolio baselines
+│   │   ├── custom_policies.py   # CNN / LSTM feature extractors for SB3
+│   │   └── visualizations.py    # Plotting utilities
+│   └── sentiment/
+│       └── extract_sentiment.py # CamemBERT / FinBERT sentiment pipeline
 │
-├── models/                 # Saved model checkpoints & HF Hub links
-├── .github/                # CI workflows (lint, tests)
-├── environment.yml         # Conda environment specification
-├── requirements.txt        # pip fallback for specific packages
-├── .gitignore
-├── README.md               # ← You are here
-└── LICENSE
+├── notebooks/
+│   ├── 01_prepare_data.ipynb    # Raw data → preprocessed parquet
+│   ├── convert_data_returns.ipynb
+│   └── create_sample.ipynb      # Create minimal sample dataset
+│
+├── tests/                       # pytest suite
+│   ├── test_portfolio_env.py
+│   ├── test_train_ppo_integration.py
+│   ├── test_eval_ppo.py
+│   └── test_model_loading.py
+│
+├── models/                      # Saved model checkpoints (timestamped)
+├── logs/                        # TensorBoard logs & monitor CSVs
+├── results/                     # Evaluation outputs
+│
+├── environment.yml              # Conda environment specification
+├── config_minimal.yaml          # Minimal config for quick testing
+├── .github/workflows/conda-tests.yml
+├── LICENSE                      # MIT
+└── README.md
 ```
 
 ---
 
 ## Dependencies & Environment Setup
 
-All code should be run inside the **Conda** environment `fr_sent_ml` for reproducibility.
+```bash
+# 1. Clone
+git clone https://github.com/LeonHauch/LLM_in_portfoliomanagement.git
+cd LLM_in_portfoliomanagement
 
-1. **Clone the repo**:
+# 2. Create Conda environment
+conda env create --file environment.yml
+conda activate fr_sent_ml
 
-   ```bash
-   git clone git@github.com:<YourUser>/french-rl-sentiment-portfolio.git
-   cd french-rl-sentiment-portfolio
-   ```
-
-2. **Create and activate the Conda environment**:
-
-   ```bash
-   conda env create --file environment.yml
-   conda activate fr_sent_ml
-   ```
-
-3. **Install additional pip packages**:
-
-   ```bash
-   pip install stable-baselines3 openai yfinance
-   ```
-
-4. **Set API keys**: create a `.env` file in the project root:
-
-   ```ini
-   OPENAI_API_KEY=sk-...
-   HUGGINGFACE_TOKEN=hf-...
-   ```
-
-5. **Verify installation**:
-
-   ```bash
-   python -c "import pandas, gym, stable_baselines3, openai; print('✅ OK')"
-   ```
+# 3. Verify
+python -c "import pandas, gymnasium, stable_baselines3, torch; print('OK')"
+```
 
 ---
 
 ## Data Acquisition
 
-### 1. Price Data
+### Price Data
 
-* **Script**: `src/data/download_prices.py`
-* **Assets**: CAC 40 constituents (e.g., `AIR.PA`, `BNP.PA`, …)
-* **Period**: 2018-01-01 to 2024-12-31
-* **Output**: MultiIndex CSVs in `data/raw/`
-
-Run:
+* **Script:** `data/download_prices.py`
+* **Assets:** 27 CAC 40 constituents (e.g. `AIR.PA`, `BNP.PA`, `MC.PA`, ...)
+* **Period:** 2018-01-01 to 2024-12-31
+* **Source:** Yahoo Finance via `yfinance`
 
 ```bash
-python src/data/download_prices.py
+python data/download_prices.py
 ```
 
-Raw data saved as `<ticker>.csv`.
+### Data Preprocessing
 
-### 2. News Data (Future Extension)
-
-* Planned via RSS/API scraping of Les Échos, Reuters France, etc.
-* Stored in `data/raw/news/` as JSON/CSV.
+* **Notebook:** `notebooks/01_prepare_data.ipynb` and `notebooks/convert_data_returns.ipynb`
+* Features per asset: Adj Close, Volume Ratio, Log Return, RSI, MACD, Bollinger, Rolling Volatility
+* Output: `data/preprocessed/data_ppo.parquet` (1,744 rows x 216 columns)
 
 ---
 
-## Data Preprocessing
+## The Environment
 
-### Price Data → Returns
+`environment/portfolio_env.py` — a Gymnasium environment for daily portfolio allocation.
 
-* **Notebook**: `notebooks/01_prepare_data.ipynb`
-* **Steps**:
+**Observations:** Flat vector of `(lookback_window x n_assets x n_features) + portfolio_weights`. Default: 60-day lookback, 5 features per asset (log returns, volume ratio, rolling volatility, correlation, SMA ratio), plus optional sentiment.
 
-  1. Load `data/raw/*.csv` with `pd.read_csv(header=[0,1], index_col=0)`
-  2. Concatenate into one DataFrame `price_data`
-  3. Compute log-returns: `r_t = log(P_t/P_{t-1})`
-  4. Drop missing
-  5. Save to `data/preprocessed/prices.parquet`
+**Actions:** Continuous weights passed through softmax to sum to 1. Supports a cash allocation.
 
-```python
-price_data.to_parquet('data/preprocessed/prices.parquet')
-```
+**Reward:** Net log-return after transaction costs (0.1%), with an optional configurable risk-adjustment bonus (off by default).
 
-### Sentiment Data → Signals
-
-*(Optional for baseline)*
-
-* Extract daily sentiment scores using GPT-4 API
-* Stored in `data/processed/sentiment.parquet`
+**Train/test split:** Set via `start_date`/`end_date` or `start_idx`/`end_idx` parameters. Default split: train on 2018-2022, test on 2023-2024.
 
 ---
 
 ## Training the PPO Agent
 
-### 1. Environment
+```bash
+# Basic training (uses default config)
+python src/rl_agent/train_ppo.py \
+    --data-path data/preprocessed/data_ppo.parquet \
+    --config config_minimal.yaml
 
-* **File**: `src/rl_agent/portfolio_env.py`
-* **Observations**: price returns + portfolio weights
-* **Actions**: continuous allocations (∑w\_i=1)
-* **Reward**: portfolio return minus transaction cost (0.4%)
+# Multi-seed training
+python src/rl_agent/train_ppo.py \
+    --data-path data/preprocessed/data_ppo.parquet \
+    --config config_minimal.yaml \
+    --seeds 42,123,456
 
-### 2. Training Script
+# Training with sentiment
+python src/rl_agent/train_ppo.py \
+    --data-path data/preprocessed/data_ppo.parquet \
+    --sentiment-path data/preprocessed/sentiment.csv \
+    --config config_minimal.yaml
+```
 
-* **File**: `src/rl_agent/train_ppo.py`
-* **Command**:
+### Policy Selection
 
-  ```bash
-  python src/rl_agent/train_ppo.py --config src/config.yaml
-  ```
-* **Output**: Saved model in `models/ppo_base.zip` (and `ppo_sentiment.zip` if sentiment used)
+Set in the config YAML:
+
+```yaml
+policy:
+  type: cnn      # mlp | cnn | lstm
+  features_dim: 128
+```
+
+* **mlp:** Default fully-connected (baseline)
+* **cnn:** 1D convolution over the time axis — captures temporal patterns
+* **lstm:** Recurrent processing of the lookback window
+
+All three use the same PPO optimization; only the feature extractor changes.
 
 ---
 
 ## Evaluation
 
-* **File**: `src/rl_agent/eval_ppo.py`
-* **Metrics**: Annualized return, volatility, Sharpe, Max drawdown
-* **Statistical Test**: Welch’s t-test on Sharpe distributions across seeds
-
 ```bash
-python src/rl_agent/eval_ppo.py --model models/ppo_base.zip --output results/base_metrics.json
+python src/rl_agent/eval_ppo_debug.py \
+    --model-path models/<run>/best_model.zip \
+    --data-path data/preprocessed/data_ppo.parquet \
+    --n-episodes 10
 ```
+
+**Metrics:** Annualized return, volatility, Sharpe ratio, Sortino ratio, max drawdown, Calmar ratio.
+
+### Classical Baselines
+
+```python
+from src.rl_agent.baselines import run_all_baselines
+
+results = run_all_baselines(
+    data_path="data/preprocessed/data_ppo.parquet",
+    start_idx=1200,  # test period start
+    end_idx=1743,     # test period end
+)
+for name, metrics in results.items():
+    print(f"{name}: Sharpe={metrics['sharpe_ratio']:.3f}")
+```
+
+Baselines included: equal-weight (daily & monthly rebalance), buy-and-hold, inverse-volatility.
 
 ---
 
-## Extending with Sentiment
+## Sentiment Integration
 
-1. Run sentiment extraction:
+### 1. Score headlines
 
-   ```bash
-   python src/sentiment/extract_sentiment.py --input data/raw/news --output data/processed/sentiment.parquet
-   ```
-2. Retrain PPO with sentiment flag:
+```bash
+# From real news data
+python src/sentiment/extract_sentiment.py score \
+    --input data/raw/news/headlines.csv \
+    --output data/preprocessed/sentiment.csv \
+    --model camembert
 
-   ```bash
-   python src/rl_agent/train_ppo.py --config src/config_sent.yaml
-   ```
+# Or generate dummy sentiment for testing
+python src/sentiment/extract_sentiment.py dummy \
+    --data-path data/preprocessed/data_ppo.parquet \
+    --output data/preprocessed/sentiment_dummy.csv
+```
 
-Compare `ppo_base` vs `ppo_sentiment` metrics.
+**Models available:**
+* `camembert` — CamemBERT fine-tuned on French text (tblard/tf-allocine)
+* `finbert` — ProsusAI/finbert for English financial text
+
+### 2. Train with sentiment
+
+```yaml
+# In config:
+env:
+  use_sentiment: true
+sentiment_path: data/preprocessed/sentiment.csv
+```
+
+The trainer merges sentiment into `Sentiment_{ticker}` columns; the environment reads them automatically.
+
+---
+
+## Configuration
+
+Example config (see `config_minimal.yaml` for a quick-test version):
+
+```yaml
+seed: 42
+data_path: data/preprocessed/data_ppo.parquet
+
+split:
+  train_end_date: "2022-12-31"
+  test_start_date: "2023-01-01"
+
+policy:
+  type: cnn
+  features_dim: 128
+
+env:
+  lookback_window: 60
+  transaction_cost: 0.001
+  cash_weight: true
+  use_sentiment: false
+  risk_bonus_weight: 0.0
+
+training:
+  total_timesteps: 1000000
+  n_envs: 4
+  learning_rate: 0.0003
+```
 
 ---
 
 ## Reproducibility & CI
 
-* **GitHub Actions** in `.github/workflows/ci.yml` to lint, test, and validate environment.
-* **Seed control** in `src/utils/seed.py` ensures deterministic runs per seed.
-* Use **Docker** (optional) for environment encapsulation.
+* **GitHub Actions** in `.github/workflows/conda-tests.yml` — runs pytest on push/PR
+* **Multi-seed training** via `--seeds` flag for statistical robustness
+* **Conda environment** pinned in `environment.yml`
 
 ---
 
 ## Project Roadmap
 
-* [x] Baseline PPO on CAC 40 returns
-* [ ] Integrate French financial news sentiment
+* [x] Baseline PPO on CAC 40 returns
+* [x] Train/test temporal split & classical baselines
+* [x] CNN/LSTM policy architectures
+* [x] Sentiment extraction pipeline (CamemBERT)
+* [ ] Acquire French financial news corpus (Les Echos, Reuters France)
+* [ ] Full sentiment-enhanced training & ablation study
 * [ ] Cross-market comparison (US vs France)
-* [ ] Analysis of translation vs direct sentiment on French text
-
----
-
-## Contributing
-
-1. Fork the repo
-2. Create a feature branch
-3. Write tests and update docs
-4. Open a Pull Request
+* [ ] Analysis of translation vs direct French sentiment
 
 ---
 
 ## License
 
-This project is licensed under the MIT License — see `LICENSE` for details.
+MIT — see `LICENSE`.
