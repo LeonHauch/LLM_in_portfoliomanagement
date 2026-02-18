@@ -1,16 +1,14 @@
-# src/training/train_ppo.py
+# src/rl_agent/train_ppo.py
 import os
+import sys
 import numpy as np
 import pandas as pd
-
 from pathlib import Path
 from stable_baselines3 import PPO
-from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import (
-    EvalCallback, 
-    CheckpointCallback, 
-    StopTrainingOnRewardThreshold,
-    CallbackList
+    EvalCallback,
+    CheckpointCallback,
+    CallbackList,
 )
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
@@ -19,405 +17,410 @@ import torch
 import argparse
 import logging
 from datetime import datetime
-from pathlib import Path
 import yaml
 import json
 
-# Import your custom environment
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from environment.portfolio_env import PortfolioEnv
+from src.rl_agent.custom_policies import get_policy_kwargs
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class PortfolioTrainer:
-    """Main trainer class for PPO portfolio optimization."""
-    
-    def __init__(self, config_path: str = None, data_path: str = None, sentiment_path: str = None):
-        """
-        Initialize the trainer.
-        
-        Args:
-            config_path: Path to configuration file
-            data_path: Path to the parquet data file
-            sentiment_path: Optional path to sentiment CSV file
-        """
+    """PPO trainer with train/test split, policy selection, and multi-seed support."""
+
+    def __init__(
+        self,
+        config_path: str = None,
+        data_path: str = None,
+        sentiment_path: str = None,
+    ):
         self.config = self._load_config(config_path)
-        self.data_path = data_path or self.config.get('data_path')
-        self.sentiment_path = sentiment_path or self.config.get('sentiment_path')  # NEW
-        
-        # Prepare data (merge sentiment if provided)
-        self._prepare_data()  # NEW
-        
-        # Setup directories
+        self.data_path = data_path or self.config.get("data_path")
+        self.sentiment_path = sentiment_path or self.config.get("sentiment_path")
+
+        self._prepare_data()
         self.setup_directories()
-        
-        # Set random seeds for reproducibility
-        self.seed = self.config.get('seed', 42)
+
+        self.seed = self.config.get("seed", 42)
         set_random_seed(self.seed)
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
-        
         logger.info(f"Trainer initialized with seed: {self.seed}")
-    
-    def _prepare_data(self):
-        """
-        Load market data and optionally merge with sentiment.
-        If sentiment is provided, creates a temporary merged file.
-        """
-        
-        # Check if sentiment should be merged
-        if self.sentiment_path and os.path.exists(self.sentiment_path):
-            logger.info(f"📊 Loading sentiment from: {self.sentiment_path}")
-            
-            try:
-                # Load market data
-                market_data = pd.read_parquet(self.data_path)
-                logger.info(f"   Market data shape: {market_data.shape}")
-                
-                # Load sentiment
-                sentiment_data = pd.read_csv(self.sentiment_path)
-                sentiment_data['date'] = pd.to_datetime(sentiment_data['date'])
-                logger.info(f"   Sentiment data shape: {sentiment_data.shape}")
-                
-                # Ensure market data has datetime date column
-                if 'date' in market_data.columns:
-                    market_data['date'] = pd.to_datetime(market_data['date'])
-                
-                # Merge on date and asset
-                merged_data = market_data.merge(
-                    sentiment_data,
-                    on=['date', 'asset'],
-                    how='left'
-                )
-                
-                # Fill missing sentiment with 0 (neutral for days without news)
-                sentiment_cols = [c for c in sentiment_data.columns 
-                                if c not in ['date', 'asset']]
-                for col in sentiment_cols:
-                    merged_data[col] = merged_data[col].fillna(0)
-                    logger.info(f"   Filled {merged_data[col].isna().sum()} missing values in '{col}'")
-                
-                logger.info(f"✅ Merged data shape: {merged_data.shape}")
-                logger.info(f"   Added sentiment columns: {sentiment_cols}")
-                
-                # Create temporary merged file
-                temp_dir = Path(self.data_path).parent / 'temp'
-                temp_dir.mkdir(exist_ok=True)
-                
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                temp_path = temp_dir / f"merged_with_sentiment_{timestamp}.parquet"
-                merged_data.to_parquet(temp_path)
-                
-                # Update data_path to point to merged file
-                self.original_data_path = self.data_path  # Keep reference to original
-                self.data_path = str(temp_path)
-                
-                logger.info(f"💾 Temporary merged data saved to: {temp_path}")
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to merge sentiment data: {e}")
-                logger.info("   Continuing with original data without sentiment")
-                import traceback
-                traceback.print_exc()
-        
-        elif self.sentiment_path:
-            logger.warning(f"⚠️  Sentiment path provided but file not found: {self.sentiment_path}")
-            logger.info("   Training without sentiment features")
-        else:
-            logger.info("📈 Training without sentiment features (none provided)")
-           
+
+    # ------------------------------------------------------------------
+    # Config
+    # ------------------------------------------------------------------
     def _load_config(self, config_path: str) -> dict:
-        """Load configuration from file or use defaults."""
         default_config = {
-            'seed': 42,
-            'data_path': 'data/processed/portfolio_data.parquet',
-            
-            # Environment parameters
-            'env': {
-                'lookback_window': 60,
-                'initial_capital': 100000.0,
-                'transaction_cost': 0.001,
-                'max_positions': None,
-                'cash_weight': True,
-                'normalize_observations': True,
-                'reward_scaling': 1000.0
+            "seed": 42,
+            "data_path": "data/preprocessed/data_ppo.parquet",
+            "sentiment_path": None,
+            "env": {
+                "lookback_window": 60,
+                "initial_capital": 100000.0,
+                "transaction_cost": 0.001,
+                "max_positions": None,
+                "cash_weight": True,
+                "normalize_observations": True,
+                "reward_scaling": 1000.0,
+                "use_sentiment": False,
+                "risk_bonus_weight": 0.0,
             },
-            
-            # Training parameters
-            'training': {
-                'total_timesteps': 1000000,
-                'learning_rate': 3e-4,
-                'n_steps': 2048,
-                'batch_size': 64,
-                'n_epochs': 10,
-                'gamma': 0.99,
-                'gae_lambda': 0.95,
-                'clip_range': 0.2,
-                'ent_coef': 0.01,
-                'vf_coef': 0.5,
-                'max_grad_norm': 0.5,
-                'target_kl': None,
-                'n_envs': 4,
-                'use_multiprocessing': False
+            # Train/test split
+            "split": {
+                "train_end_idx": None,
+                "test_start_idx": None,
+                "train_end_date": "2022-12-31",
+                "test_start_date": "2023-01-01",
             },
-            
-            # Evaluation parameters
-            'evaluation': {
-                'eval_freq': 10000,
-                'n_eval_episodes': 10,
-                'eval_deterministic': True
+            "policy": {
+                "type": "mlp",       # mlp | cnn | lstm
+                "features_dim": 128,
             },
-            
-            # Saving parameters
-            'saving': {
-                'save_freq': 50000,
-                'save_path': 'models/ppo_portfolio',
-                'keep_best_only': True
+            "training": {
+                "total_timesteps": 1000000,
+                "learning_rate": 3e-4,
+                "n_steps": 2048,
+                "batch_size": 64,
+                "n_epochs": 10,
+                "gamma": 0.99,
+                "gae_lambda": 0.95,
+                "clip_range": 0.2,
+                "ent_coef": 0.01,
+                "vf_coef": 0.5,
+                "max_grad_norm": 0.5,
+                "target_kl": None,
+                "n_envs": 4,
+                "use_multiprocessing": False,
             },
-            
-            # Logging
-            'logging': {
-                'tensorboard': True,
-                'wandb': False,
-                'log_interval': 100
-            }
+            "evaluation": {
+                "eval_freq": 10000,
+                "n_eval_episodes": 10,
+                "eval_deterministic": True,
+            },
+            "saving": {
+                "save_freq": 50000,
+                "save_path": "models/ppo_portfolio",
+                "keep_best_only": True,
+            },
+            "logging": {
+                "tensorboard": True,
+                "wandb": False,
+                "log_interval": 100,
+            },
         }
-        
+
         if config_path and os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                if config_path.endswith('.yaml') or config_path.endswith('.yml'):
-                    loaded_config = yaml.safe_load(f)
+            with open(config_path, "r") as f:
+                if config_path.endswith((".yaml", ".yml")):
+                    loaded = yaml.safe_load(f)
                 else:
-                    loaded_config = json.load(f)
-            
-            # Merge with defaults
-            self._deep_update(default_config, loaded_config)
+                    loaded = json.load(f)
+            self._deep_update(default_config, loaded)
             logger.info(f"Configuration loaded from {config_path}")
         else:
             logger.info("Using default configuration")
-            
+
         return default_config
-    
-    def _deep_update(self, base_dict: dict, update_dict: dict):
-        """Deep update dictionary."""
-        for key, value in update_dict.items():
-            if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
-                self._deep_update(base_dict[key], value)
+
+    @staticmethod
+    def _deep_update(base: dict, update: dict):
+        for k, v in update.items():
+            if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+                PortfolioTrainer._deep_update(base[k], v)
             else:
-                base_dict[key] = value
-    
+                base[k] = v
+
+    # ------------------------------------------------------------------
+    # Data preparation (sentiment merge)
+    # ------------------------------------------------------------------
+    def _prepare_data(self):
+        if self.sentiment_path and os.path.exists(self.sentiment_path):
+            logger.info(f"Loading sentiment from: {self.sentiment_path}")
+            try:
+                market = pd.read_parquet(self.data_path)
+                sent = pd.read_csv(self.sentiment_path)
+                sent["date"] = pd.to_datetime(sent["date"])
+
+                # Pivot sentiment to wide format: Sentiment_{ticker}
+                if "asset" in sent.columns and "sentiment" in sent.columns:
+                    pivot = sent.pivot_table(
+                        index="date", columns="asset", values="sentiment", aggfunc="mean"
+                    )
+                    pivot.columns = [f"Sentiment_{c}" for c in pivot.columns]
+                    # Align with market index
+                    if hasattr(market.index, "date"):
+                        pivot.index = pd.to_datetime(pivot.index)
+                        market = market.join(pivot, how="left")
+                    else:
+                        market = market.merge(
+                            pivot, left_index=True, right_index=True, how="left"
+                        )
+                    # Fill missing sentiment with 0
+                    for c in pivot.columns:
+                        market[c] = market[c].fillna(0)
+
+                    temp_dir = Path(self.data_path).parent / "temp"
+                    temp_dir.mkdir(exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    temp_path = temp_dir / f"merged_sentiment_{ts}.parquet"
+                    market.to_parquet(temp_path)
+                    self.data_path = str(temp_path)
+                    logger.info(f"Merged sentiment data saved to {temp_path}")
+                else:
+                    logger.warning("Sentiment CSV missing 'asset'/'sentiment' columns")
+            except Exception as e:
+                logger.error(f"Failed to merge sentiment: {e}")
+        elif self.sentiment_path:
+            logger.warning(f"Sentiment path not found: {self.sentiment_path}")
+        else:
+            logger.info("Training without sentiment features")
+
+    # ------------------------------------------------------------------
+    # Directories
+    # ------------------------------------------------------------------
     def setup_directories(self):
-        """Create necessary directories."""
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create directories
         self.model_dir = Path(f"models/ppo_portfolio_{self.timestamp}")
         self.log_dir = Path(f"logs/ppo_portfolio_{self.timestamp}")
         self.results_dir = Path(f"results/ppo_portfolio_{self.timestamp}")
-        
-        for directory in [self.model_dir, self.log_dir, self.results_dir]:
-            directory.mkdir(parents=True, exist_ok=True)
-            
-        logger.info(f"Directories created: {self.model_dir}")
-        
-    def create_env(self, rank: int = 0):
-        """Create a single environment instance."""
+        for d in [self.model_dir, self.log_dir, self.results_dir]:
+            d.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Environment creation (with split support)
+    # ------------------------------------------------------------------
+    def _env_kwargs(self, split: str = "train") -> dict:
+        """Build PortfolioEnv kwargs for a given split."""
+        env_cfg = dict(self.config["env"])
+        split_cfg = self.config.get("split", {})
+
+        if split == "train":
+            env_cfg["end_date"] = split_cfg.get("train_end_date")
+            env_cfg["end_idx"] = split_cfg.get("train_end_idx")
+        elif split == "test":
+            env_cfg["start_date"] = split_cfg.get("test_start_date")
+            env_cfg["start_idx"] = split_cfg.get("test_start_idx")
+
+        return env_cfg
+
+    def create_env(self, rank: int = 0, split: str = "train"):
+        env_kwargs = self._env_kwargs(split)
+
         def _init():
-            env = PortfolioEnv(
-                data_path=self.data_path,
-                **self.config['env']
-            )
-            env = Monitor(env, str(self.log_dir / f"monitor_{rank}.csv"))
+            env = PortfolioEnv(data_path=self.data_path, **env_kwargs)
+            env = Monitor(env, str(self.log_dir / f"monitor_{split}_{rank}.csv"))
             return env
+
         return _init
-    
-    def create_vec_env(self):
-        """Create vectorized environment."""
-        n_envs = self.config['training']['n_envs']
-        use_multiprocessing = self.config['training']['use_multiprocessing']
-        
-        if use_multiprocessing and n_envs > 1:
-            env = SubprocVecEnv([self.create_env(i) for i in range(n_envs)])
+
+    def create_vec_env(self, split: str = "train"):
+        n_envs = self.config["training"]["n_envs"]
+        use_mp = self.config["training"]["use_multiprocessing"]
+        fns = [self.create_env(i, split) for i in range(n_envs)]
+        if use_mp and n_envs > 1:
+            env = SubprocVecEnv(fns)
         else:
-            env = DummyVecEnv([self.create_env(i) for i in range(n_envs)])
-            
-        logger.info(f"Created vectorized environment with {n_envs} instances")
+            env = DummyVecEnv(fns)
+        logger.info(f"Created {split} vec-env with {n_envs} instances")
         return env
-    
+
+    # ------------------------------------------------------------------
+    # Model creation (with policy selection)
+    # ------------------------------------------------------------------
     def create_model(self, env):
-        """Create PPO model."""
-        training_config = self.config['training']
-        
-        # PPO parameters
+        tc = self.config["training"]
+        policy_cfg = self.config.get("policy", {})
+        policy_type = policy_cfg.get("type", "mlp")
+
+        # Get env metadata for structured policies
+        sample_env = env.envs[0] if hasattr(env, "envs") else env
+        # Unwrap Monitor if needed
+        inner = sample_env
+        while hasattr(inner, "env"):
+            inner = inner.env
+        n_assets = inner.n_assets
+        n_features = inner.n_features_per_asset
+        lookback = inner.lookback_window
+
+        policy_kwargs = get_policy_kwargs(
+            policy_type=policy_type,
+            n_assets=n_assets,
+            n_features_per_asset=n_features,
+            lookback_window=lookback,
+            observation_space=env.observation_space,
+            features_dim=policy_cfg.get("features_dim", 128),
+        )
+
         model_params = {
-            'learning_rate': training_config['learning_rate'],
-            'n_steps': training_config['n_steps'],
-            'batch_size': training_config['batch_size'],
-            'n_epochs': training_config['n_epochs'],
-            'gamma': training_config['gamma'],
-            'gae_lambda': training_config['gae_lambda'],
-            'clip_range': training_config['clip_range'],
-            'ent_coef': training_config['ent_coef'],
-            'vf_coef': training_config['vf_coef'],
-            'max_grad_norm': training_config['max_grad_norm'],
-            'target_kl': training_config.get('target_kl'),
-            'tensorboard_log': str(self.log_dir) if self.config['logging']['tensorboard'] else None,
-            'seed': self.seed,
-            'verbose': 1
+            "learning_rate": tc["learning_rate"],
+            "n_steps": tc["n_steps"],
+            "batch_size": tc["batch_size"],
+            "n_epochs": tc["n_epochs"],
+            "gamma": tc["gamma"],
+            "gae_lambda": tc["gae_lambda"],
+            "clip_range": tc["clip_range"],
+            "ent_coef": tc["ent_coef"],
+            "vf_coef": tc["vf_coef"],
+            "max_grad_norm": tc["max_grad_norm"],
+            "target_kl": tc.get("target_kl"),
+            "tensorboard_log": str(self.log_dir)
+            if self.config["logging"]["tensorboard"]
+            else None,
+            "seed": self.seed,
+            "verbose": 1,
+            "policy_kwargs": policy_kwargs,
         }
-        
-        # Create model
+
         model = PPO("MlpPolicy", env, **model_params)
-        
-        logger.info("PPO model created with parameters:")
-        for key, value in model_params.items():
-            logger.info(f"  {key}: {value}")
-            
+        logger.info(f"PPO model created (policy={policy_type})")
         return model
-    
+
+    # ------------------------------------------------------------------
+    # Callbacks
+    # ------------------------------------------------------------------
     def create_callbacks(self, env):
-        """Create training callbacks."""
         callbacks = []
-        
-        # Evaluation callback
-        eval_config = self.config['evaluation']
-        if eval_config['eval_freq'] > 0:
-            eval_env = DummyVecEnv([self.create_env()])
-            eval_callback = EvalCallback(
-                eval_env,
-                best_model_save_path=str(self.model_dir),
-                log_path=str(self.log_dir),
-                eval_freq=eval_config['eval_freq'],
-                n_eval_episodes=eval_config['n_eval_episodes'],
-                deterministic=eval_config['eval_deterministic'],
-                render=False
+        ec = self.config["evaluation"]
+        if ec["eval_freq"] > 0:
+            eval_env = DummyVecEnv([self.create_env(split="train")])
+            callbacks.append(
+                EvalCallback(
+                    eval_env,
+                    best_model_save_path=str(self.model_dir),
+                    log_path=str(self.log_dir),
+                    eval_freq=ec["eval_freq"],
+                    n_eval_episodes=ec["n_eval_episodes"],
+                    deterministic=ec["eval_deterministic"],
+                    render=False,
+                )
             )
-            callbacks.append(eval_callback)
-            logger.info(f"Evaluation callback added (freq: {eval_config['eval_freq']})")
-        
-        # Checkpoint callback
-        save_config = self.config['saving']
-        if save_config['save_freq'] > 0:
-            checkpoint_callback = CheckpointCallback(
-                save_freq=save_config['save_freq'],
-                save_path=str(self.model_dir),
-                name_prefix='ppo_portfolio'
+        sc = self.config["saving"]
+        if sc["save_freq"] > 0:
+            callbacks.append(
+                CheckpointCallback(
+                    save_freq=sc["save_freq"],
+                    save_path=str(self.model_dir),
+                    name_prefix="ppo_portfolio",
+                )
             )
-            callbacks.append(checkpoint_callback)
-            logger.info(f"Checkpoint callback added (freq: {save_config['save_freq']})")
-        
         return CallbackList(callbacks) if callbacks else None
-    
-    def save_config(self):
-        """Save configuration to results directory."""
-        config_path = self.results_dir / 'config.yaml'
-        with open(config_path, 'w') as f:
-            yaml.dump(self.config, f, default_flow_style=False)
-        
-        logger.info(f"Configuration saved to {config_path}")
-    
+
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
     def train(self):
-        """Main training loop."""
         logger.info("Starting PPO training...")
-        
-        # Save configuration
         self.save_config()
-        
-        # Create environment
-        env = self.create_vec_env()
-        
-        # Create model
+        env = self.create_vec_env("train")
         model = self.create_model(env)
-        
-        # Create callbacks
         callbacks = self.create_callbacks(env)
-        
-        # Start training
-        total_timesteps = self.config['training']['total_timesteps']
-        
+        total = self.config["training"]["total_timesteps"]
+
         try:
             model.learn(
-                total_timesteps=total_timesteps,
+                total_timesteps=total,
                 callback=callbacks,
-                log_interval=self.config['logging']['log_interval'],
-                progress_bar=True
+                log_interval=self.config["logging"]["log_interval"],
+                progress_bar=True,
             )
-            
-            # Save final model
-            final_model_path = self.model_dir / 'final_model'
-            model.save(final_model_path)
-            
-            logger.info(f"Training completed! Final model saved to {final_model_path}")
-            
-            # Save training statistics
+            path = self.model_dir / "final_model"
+            model.save(path)
+            logger.info(f"Training completed! Model saved to {path}")
             self.save_training_stats(model)
-            
         except KeyboardInterrupt:
-            logger.info("Training interrupted by user")
-            # Save current model
-            interrupted_model_path = self.model_dir / 'interrupted_model'
-            model.save(interrupted_model_path)
-            logger.info(f"Model saved to {interrupted_model_path}")
-        
+            path = self.model_dir / "interrupted_model"
+            model.save(path)
+            logger.info(f"Training interrupted. Model saved to {path}")
         finally:
             env.close()
-            logger.info("Environment closed")
-            
-        return model
-    
-    def save_training_stats(self, model):
-        """Save training statistics."""
-        stats = {
-            'total_timesteps': model.num_timesteps,
-            'training_completed': True,
-            'model_path': str(self.model_dir),
-            'config': self.config,
-            'timestamp': self.timestamp
-        }
-        
-        stats_path = self.results_dir / 'training_stats.json'
-        with open(stats_path, 'w') as f:
-            json.dump(stats, f, indent=2, default=str)
-            
-        logger.info(f"Training statistics saved to {stats_path}")
 
+        return model
+
+    def save_config(self):
+        p = self.results_dir / "config.yaml"
+        with open(p, "w") as f:
+            yaml.dump(self.config, f, default_flow_style=False)
+
+    def save_training_stats(self, model):
+        stats = {
+            "total_timesteps": model.num_timesteps,
+            "training_completed": True,
+            "model_path": str(self.model_dir),
+            "config": self.config,
+            "timestamp": self.timestamp,
+        }
+        p = self.results_dir / "training_stats.json"
+        with open(p, "w") as f:
+            json.dump(stats, f, indent=2, default=str)
+
+
+# ======================================================================
+# Multi-seed training
+# ======================================================================
+def train_multi_seed(
+    config_path: str,
+    data_path: str,
+    seeds: list,
+    sentiment_path: str = None,
+) -> list:
+    """Train PPO across multiple seeds and return list of model paths."""
+    model_paths = []
+    for seed in seeds:
+        logger.info(f"\n{'='*60}\nTraining with seed={seed}\n{'='*60}")
+        trainer = PortfolioTrainer(
+            config_path=config_path,
+            data_path=data_path,
+            sentiment_path=sentiment_path,
+        )
+        trainer.config["seed"] = seed
+        trainer.seed = seed
+        set_random_seed(seed)
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+        trainer.train()
+        model_paths.append(str(trainer.model_dir / "final_model.zip"))
+    return model_paths
+
+
+# ======================================================================
+# CLI
+# ======================================================================
 def main():
-    """Main function for command line usage."""
-    parser = argparse.ArgumentParser(description='Train PPO for Portfolio Optimization')
-    parser.add_argument('--data-path', type=str, required=False,
-                       help='Path to the parquet data file')
-    parser.add_argument('--config', type=str, default=None,
-                       help='Path to configuration file (YAML or JSON)')
-    parser.add_argument('--seed', type=int, default=42,
-                       help='Random seed for reproducibility')
-    parser.add_argument('--sentiment-path', type=str, default=None,
-                       help='Optional: Path to sentiment CSV file (date, asset, sentiment)')
-    
-    args = parser.parse_args()
-    
-    
-    trainer = PortfolioTrainer(
-        config_path=args.config, 
-        data_path=args.data_path,
-        sentiment_path=args.sentiment_path
+    parser = argparse.ArgumentParser(description="Train PPO for Portfolio Optimization")
+    parser.add_argument("--data-path", type=str, help="Path to parquet data file")
+    parser.add_argument("--config", type=str, default=None, help="Config YAML/JSON")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--seeds",
+        type=str,
+        default=None,
+        help="Comma-separated seeds for multi-seed training (e.g. 42,123,456)",
     )
-    
-    # Override seed if provided
-    if args.seed != 42:
-        trainer.config['seed'] = args.seed
-        trainer.seed = args.seed
-    
-    # NOW verify data file exists (after trainer has determined the final data_path)
-    if not os.path.exists(trainer.data_path):
-        raise FileNotFoundError(f"Data file not found: {trainer.data_path}")
-    
-    # Start training
-    model = trainer.train()
-    
-    logger.info("Training script completed!")
+    parser.add_argument("--sentiment-path", type=str, default=None)
+    args = parser.parse_args()
+
+    if args.seeds:
+        seeds = [int(s) for s in args.seeds.split(",")]
+        paths = train_multi_seed(args.config, args.data_path, seeds, args.sentiment_path)
+        logger.info(f"Multi-seed training done. Models: {paths}")
+    else:
+        trainer = PortfolioTrainer(
+            config_path=args.config,
+            data_path=args.data_path,
+            sentiment_path=args.sentiment_path,
+        )
+        if args.seed != 42:
+            trainer.config["seed"] = args.seed
+            trainer.seed = args.seed
+        if not os.path.exists(trainer.data_path):
+            raise FileNotFoundError(f"Data file not found: {trainer.data_path}")
+        trainer.train()
+
 
 if __name__ == "__main__":
     main()

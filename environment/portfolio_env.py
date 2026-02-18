@@ -1,21 +1,26 @@
-# src/environment/portfolio_env.py
+# environment/portfolio_env.py
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import pandas as pd
-from typing import Dict, Tuple, Any, Optional
+from typing import Dict, Tuple, Any, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
 
+
 class PortfolioEnv(gym.Env):
     """
     Portfolio management environment for PPO training.
-    
-    This environment simulates portfolio allocation decisions across multiple assets
-    based on historical price and volume data.
+
+    Simulates portfolio allocation decisions across multiple assets
+    based on historical price and volume data. Supports temporal
+    train/test splitting, optional sentiment features, and structured
+    observations for CNN/LSTM policies.
     """
-    
+
+    metadata = {"render_modes": ["human"]}
+
     def __init__(
         self,
         data_path: str,
@@ -25,23 +30,33 @@ class PortfolioEnv(gym.Env):
         max_positions: Optional[int] = None,
         cash_weight: bool = True,
         normalize_observations: bool = True,
-        reward_scaling: float = 1000.0
+        reward_scaling: float = 1000.0,
+        start_idx: Optional[int] = None,
+        end_idx: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        use_sentiment: bool = False,
+        risk_bonus_weight: float = 0.0,
     ):
         """
-        Initialize the portfolio environment.
-        
         Args:
-            data_path: Path to the parquet file with preprocessed data
-            lookback_window: Number of historical periods to include in observation
-            initial_capital: Starting portfolio value
-            transaction_cost: Transaction cost as percentage of trade value
-            max_positions: Maximum number of positions (None for no limit)
-            cash_weight: Whether to include cash as an asset option
-            normalize_observations: Whether to normalize observation features
-            reward_scaling: Scaling factor for rewards
+            data_path: Path to the parquet file with preprocessed data.
+            lookback_window: Number of historical periods in observation.
+            initial_capital: Starting portfolio value.
+            transaction_cost: Cost as fraction of traded value.
+            max_positions: Maximum simultaneous positions (None = no limit).
+            cash_weight: Whether to include cash as an allocable asset.
+            normalize_observations: Clip observations to [-10, 10].
+            reward_scaling: Multiplicative factor applied to reward.
+            start_idx: First usable row index (inclusive). Overridden by start_date.
+            end_idx: Last usable row index (inclusive). Overridden by end_date.
+            start_date: Earliest date string (inclusive, ISO format) for this split.
+            end_date: Latest date string (inclusive, ISO format) for this split.
+            use_sentiment: If True, include Sentiment_* columns in observations.
+            risk_bonus_weight: Weight for rolling-Sharpe reward bonus (0 = pure return).
         """
         super().__init__()
-        
+
         self.data_path = data_path
         self.lookback_window = lookback_window
         self.initial_capital = initial_capital
@@ -50,294 +65,335 @@ class PortfolioEnv(gym.Env):
         self.cash_weight = cash_weight
         self.normalize_observations = normalize_observations
         self.reward_scaling = reward_scaling
-        
+        self.use_sentiment = use_sentiment
+        self.risk_bonus_weight = risk_bonus_weight
+
+        # Train/test boundaries (resolved after data load)
+        self._start_idx_param = start_idx
+        self._end_idx_param = end_idx
+        self._start_date_param = start_date
+        self._end_date_param = end_date
+
         # Load and prepare data
         self._load_data()
+        self._resolve_date_range()
         self._setup_spaces()
-        
+
         # Initialize state
         self.reset()
-        
+
+    # ------------------------------------------------------------------
+    # Data loading
+    # ------------------------------------------------------------------
     def _load_data(self):
-        """Load and process the parquet data."""
+        """Load parquet and derive features."""
         logger.info(f"Loading data from {self.data_path}")
-        
-        # Load the parquet file
         self.raw_data = pd.read_parquet(self.data_path)
-        
-        # Extract asset names from column names
-        adj_close_cols = [col for col in self.raw_data.columns if col.startswith('Adj Close_')]
-        volume_ratio_cols = [col for col in self.raw_data.columns if col.startswith('Volume_Ratio_')]
-        
-        # Extract asset symbols
-        self.asset_symbols = [col.replace('Adj Close_', '') for col in adj_close_cols]
+
+        # Extract asset columns
+        adj_close_cols = sorted(
+            [c for c in self.raw_data.columns if c.startswith("Adj Close_")]
+        )
+        volume_ratio_cols = sorted(
+            [c for c in self.raw_data.columns if c.startswith("Volume_Ratio_")]
+        )
+
+        self.asset_symbols = [c.replace("Adj Close_", "") for c in adj_close_cols]
         self.n_assets = len(self.asset_symbols)
-        
         logger.info(f"Found {self.n_assets} assets: {self.asset_symbols[:5]}...")
-        
-        # Organize data by asset
+
+        # Price & volume dataframes with simple column names
         self.price_data = self.raw_data[adj_close_cols].copy()
-        self.volume_data = self.raw_data[volume_ratio_cols].copy()
-        
-        # Rename columns to just asset symbols
         self.price_data.columns = self.asset_symbols
-        self.volume_data.columns = self.asset_symbols
-        
-        # Calculate returns
-        self.returns_data = self.price_data.pct_change().fillna(0)
-        
-        # Calculate additional features
+
+        self.volume_data = pd.DataFrame(index=self.raw_data.index)
+        for sym in self.asset_symbols:
+            col = f"Volume_Ratio_{sym}"
+            if col in self.raw_data.columns:
+                self.volume_data[sym] = self.raw_data[col]
+            else:
+                self.volume_data[sym] = 0.0
+
+        # Log returns: r_t = ln(P_t / P_{t-1})
+        self.returns_data = np.log(self.price_data / self.price_data.shift(1)).fillna(0)
+
+        # Technical features
         self._calculate_features()
-        
-        # Set valid date range (excluding lookback period)
-        self.valid_start_idx = self.lookback_window
-        self.valid_end_idx = len(self.raw_data) - 1
-        
-        logger.info(f"Data loaded: {len(self.raw_data)} periods, valid range: {self.valid_start_idx} to {self.valid_end_idx}")
-        
+
+        # Sentiment features (optional)
+        self.has_sentiment = False
+        if self.use_sentiment:
+            sent_cols = sorted(
+                [c for c in self.raw_data.columns if c.startswith("Sentiment_")]
+            )
+            if sent_cols:
+                self.sentiment_data = self.raw_data[sent_cols].copy()
+                self.sentiment_data.columns = [
+                    c.replace("Sentiment_", "") for c in sent_cols
+                ]
+                # Align to asset list, fill missing with 0
+                self.sentiment_data = self.sentiment_data.reindex(
+                    columns=self.asset_symbols, fill_value=0.0
+                )
+                self.has_sentiment = True
+                logger.info(f"Sentiment features loaded for {len(sent_cols)} assets")
+            else:
+                logger.warning("use_sentiment=True but no Sentiment_* columns found")
+
+        logger.info(f"Data loaded: {len(self.raw_data)} periods")
+
     def _calculate_features(self):
-        """Calculate additional technical features."""
-        # Rolling volatility (20-period)
+        """Derive rolling volatility, correlation, and SMA ratio."""
         self.volatility_data = self.returns_data.rolling(window=20).std().fillna(0)
-        
-        # Rolling correlation with market (using first asset as proxy)
-        market_returns = self.returns_data.iloc[:, 0]
-        self.correlation_data = pd.DataFrame(index=self.returns_data.index, columns=self.asset_symbols)
-        
+
+        # Equal-weight market proxy
+        market_returns = self.returns_data.mean(axis=1)
+        self.correlation_data = pd.DataFrame(
+            index=self.returns_data.index, columns=self.asset_symbols, dtype=float
+        )
         for asset in self.asset_symbols:
-            self.correlation_data[asset] = self.returns_data[asset].rolling(window=20).corr(market_returns).fillna(0)
-        
-        # Simple moving averages ratio (price / SMA20)
+            self.correlation_data[asset] = (
+                self.returns_data[asset]
+                .rolling(window=20)
+                .corr(market_returns)
+                .fillna(0)
+            )
+
         sma_20 = self.price_data.rolling(window=20).mean()
         self.sma_ratio_data = (self.price_data / sma_20).fillna(1.0)
-        
+
+    # ------------------------------------------------------------------
+    # Train / test split resolution
+    # ------------------------------------------------------------------
+    def _resolve_date_range(self):
+        """Convert date/idx parameters into valid_start_idx and valid_end_idx."""
+        data_len = len(self.raw_data)
+
+        # Start from date if provided
+        if self._start_date_param is not None and hasattr(self.raw_data.index, "get_loc"):
+            try:
+                idx = self.raw_data.index.get_indexer(
+                    [pd.Timestamp(self._start_date_param)], method="bfill"
+                )[0]
+                self._start_idx_param = max(idx, self.lookback_window)
+            except Exception:
+                logger.warning(f"Could not resolve start_date={self._start_date_param}")
+        elif self._start_date_param is not None:
+            # Index might be integer-based; try matching a date column
+            logger.warning("start_date provided but index is not datetime; ignoring")
+
+        if self._end_date_param is not None and hasattr(self.raw_data.index, "get_loc"):
+            try:
+                idx = self.raw_data.index.get_indexer(
+                    [pd.Timestamp(self._end_date_param)], method="ffill"
+                )[0]
+                self._end_idx_param = min(idx, data_len - 1)
+            except Exception:
+                logger.warning(f"Could not resolve end_date={self._end_date_param}")
+
+        # Fall back to defaults
+        self.valid_start_idx = (
+            max(self._start_idx_param, self.lookback_window)
+            if self._start_idx_param is not None
+            else self.lookback_window
+        )
+        self.valid_end_idx = (
+            min(self._end_idx_param, data_len - 1)
+            if self._end_idx_param is not None
+            else data_len - 1
+        )
+
+        if self.valid_end_idx <= self.valid_start_idx:
+            raise ValueError(
+                f"Invalid data range: start={self.valid_start_idx}, "
+                f"end={self.valid_end_idx}"
+            )
+
+        logger.info(
+            f"Date range resolved: idx [{self.valid_start_idx}, {self.valid_end_idx}] "
+            f"({self.valid_end_idx - self.valid_start_idx} tradable periods)"
+        )
+
+    # ------------------------------------------------------------------
+    # Spaces
+    # ------------------------------------------------------------------
     def _setup_spaces(self):
-        """Setup observation and action spaces."""
-        # Observation space: [lookback_window, n_features_per_asset]
-        # Features per asset: [returns, volume_ratio, volatility, correlation, sma_ratio]
+        """Define observation and action spaces."""
+        # Base features per asset: returns, volume, volatility, correlation, sma_ratio
         self.n_features_per_asset = 5
-        
-        if self.normalize_observations:
-            obs_low = -np.inf
-            obs_high = np.inf
-        else:
-            obs_low = -10.0  # Reasonable bounds for financial data
-            obs_high = 10.0
-            
-        # Add current portfolio weights to observation
+        if self.has_sentiment:
+            self.n_features_per_asset += 1  # sentiment score
+
         portfolio_features = self.n_assets + (1 if self.cash_weight else 0)
-        total_obs_features = self.lookback_window * self.n_assets * self.n_features_per_asset + portfolio_features
-        
+        total_obs_dim = (
+            self.lookback_window * self.n_assets * self.n_features_per_asset
+            + portfolio_features
+        )
+
         self.observation_space = spaces.Box(
-            low=obs_low,
-            high=obs_high,
-            shape=(total_obs_features,),
-            dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(total_obs_dim,), dtype=np.float32
         )
-        
-        # Action space: portfolio weights (sum to 1)
-        # If cash_weight=True, include cash as an option
+
         action_dim = self.n_assets + (1 if self.cash_weight else 0)
-        
-        # Use Box space with post-processing to ensure weights sum to 1
         self.action_space = spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(action_dim,),
-            dtype=np.float32
+            low=0.0, high=1.0, shape=(action_dim,), dtype=np.float32
         )
-        
-        logger.info(f"Observation space: {self.observation_space.shape}")
-        logger.info(f"Action space: {self.action_space.shape}")
-        
+
+        logger.info(
+            f"Obs space: {self.observation_space.shape}, "
+            f"Action space: {self.action_space.shape}"
+        )
+
+    # ------------------------------------------------------------------
+    # Observation
+    # ------------------------------------------------------------------
     def _get_observation(self) -> np.ndarray:
-        """Get current observation."""
-        # Get lookback window of features
-        start_idx = self.current_step - self.lookback_window
-        end_idx = self.current_step
-        
-        # Collect features for all assets over lookback window
-        features = []
-        
-        for i in range(start_idx, end_idx):
+        """Build flat observation vector."""
+        start = self.current_step - self.lookback_window
+        end = self.current_step
+
+        features: List[float] = []
+        for i in range(start, end):
             for asset in self.asset_symbols:
-                asset_features = [
+                asset_feats = [
                     self.returns_data.iloc[i][asset],
                     self.volume_data.iloc[i][asset],
                     self.volatility_data.iloc[i][asset],
-                    self.correlation_data.iloc[i][asset],
-                    self.sma_ratio_data.iloc[i][asset]
+                    float(self.correlation_data.iloc[i][asset]),
+                    self.sma_ratio_data.iloc[i][asset],
                 ]
-                features.extend(asset_features)
-        
-        # Add current portfolio weights
+                if self.has_sentiment:
+                    asset_feats.append(self.sentiment_data.iloc[i][asset])
+                features.extend(asset_feats)
+
         features.extend(self.current_weights)
-        
         obs = np.array(features, dtype=np.float32)
-        assert obs.ndim == 1 and obs.shape[0] == self.observation_space.shape[0], \
-            f"Observation shape mismatch: {obs.shape} vs {self.observation_space.shape}"
-        return obs
 
-        
-        # Normalize if requested
         if self.normalize_observations:
-            obs = np.clip(obs, -10, 10)  # Clip extreme values
-            
-        return obs
-    
-    def _process_action(self, action: np.ndarray) -> np.ndarray:
-        """Process raw action to valid portfolio weights."""
+            obs = np.clip(obs, -10, 10)
 
-        action = np.asarray(action, dtype=np.float64)
-        # If action comes in shape (n_envs, action_dim) and n_envs == 1, squeeze it
-        if action.ndim > 1 and action.shape[0] == 1:
-            action = action[0]
-        # If for some reason action is 2D (n_envs>1), pick the first env (this env is not vectorized internally)
-        if action.ndim > 1:
-            # if you want to fully support vectorized step() you'd need to handle batching; for now handle single env
-            action = action.squeeze()
-        
-        # numeric-stable softmax
-        action = np.clip(action, -50, 50)             # avoid overflow in exp
-        max_a = np.max(action)
-        exp_action = np.exp(action - max_a)
-        weights = exp_action / np.sum(exp_action, axis=-1)
-        
+        return obs
+
+    # ------------------------------------------------------------------
+    # Action processing
+    # ------------------------------------------------------------------
+    def _process_action(self, action: np.ndarray) -> np.ndarray:
+        """Convert raw network output to portfolio weights via softmax."""
+        action = np.asarray(action, dtype=np.float64).squeeze()
+        if action.ndim == 0:
+            action = action.reshape(1)
+
+        # Numerically-stable softmax
+        action = np.clip(action, -50, 50)
+        exp_a = np.exp(action - np.max(action))
+        weights = exp_a / exp_a.sum()
+
         if self.max_positions is not None and self.max_positions < len(weights):
-                # Keep only top max_positions weights, set others to 0
-            top_indices = np.argsort(weights)[-self.max_positions:]
-            new_weights = np.zeros_like(weights)
-            new_weights[top_indices] = weights[top_indices]
-            new_weights = new_weights / np.sum(new_weights)  # Renormalize
-            weights = new_weights
-                
+            top = np.argsort(weights)[-self.max_positions :]
+            mask = np.zeros_like(weights)
+            mask[top] = weights[top]
+            weights = mask / mask.sum()
+
         return weights
-    
+
+    # ------------------------------------------------------------------
+    # Reward
+    # ------------------------------------------------------------------
     def _calculate_reward(self, new_weights: np.ndarray) -> float:
-        """Calculate reward for the current step."""
-        # Get current period returns
-        current_returns = self.returns_data.iloc[self.current_step][self.asset_symbols].values
-        
-        # Calculate portfolio return
+        """Net log-return minus transaction costs, with optional risk bonus."""
+        current_returns = self.returns_data.iloc[self.current_step][
+            self.asset_symbols
+        ].values.astype(np.float64)
+
         if self.cash_weight:
-            # Last weight is cash (0% return)
             asset_weights = new_weights[:-1]
-            portfolio_return = np.dot(asset_weights, current_returns)
         else:
-            portfolio_return = np.dot(new_weights, current_returns)
-        
-        # Calculate transaction costs
+            asset_weights = new_weights
+
+        portfolio_return = float(np.dot(asset_weights, current_returns))
+
         weight_changes = np.abs(new_weights - self.current_weights)
-        transaction_costs = np.sum(weight_changes) * self.transaction_cost
-        
-        # Net return after transaction costs
-        net_return = portfolio_return - transaction_costs
-        
-        # Update portfolio value
-        self.portfolio_value *= (1 + net_return)
-        
-        # Base reward is the net return
+        tc = float(np.sum(weight_changes)) * self.transaction_cost
+        net_return = portfolio_return - tc
+
+        self.portfolio_value *= 1 + net_return
+
         reward = net_return
-        
-        # Add risk-adjusted component (Sharpe-like)
-        if len(self.returns_history) > 20:
-            recent_returns = np.array(self.returns_history[-20:])
-            if np.std(recent_returns) > 0:
-                risk_adjusted_reward = np.mean(recent_returns) / np.std(recent_returns)
-                reward += 0.1 * risk_adjusted_reward  # Small risk adjustment bonus
-        
-        # Scale reward
+
+        # Optional risk-adjusted bonus (off by default: risk_bonus_weight=0)
+        if self.risk_bonus_weight > 0 and len(self.returns_history) > 20:
+            recent = np.array(self.returns_history[-20:])
+            std = np.std(recent)
+            if std > 0:
+                reward += self.risk_bonus_weight * (np.mean(recent) / std)
+
         reward *= self.reward_scaling
-        
-        # Track returns
         self.returns_history.append(net_return)
-        
         return reward
-    
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
-        """Execute one step in the environment."""
+
+    # ------------------------------------------------------------------
+    # Step / Reset
+    # ------------------------------------------------------------------
+    def step(
+        self, action: np.ndarray
+    ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         action = np.asarray(action)
         if action.ndim > 1 and action.shape[0] == 1:
             action = action[0]
         if action.ndim != 1:
-            raise ValueError(f"Unexpected action ndim {action.ndim}, action shape: {action.shape}")
+            raise ValueError(
+                f"Unexpected action ndim {action.ndim}, shape: {action.shape}"
+            )
 
-        # Process action to get valid portfolio weights  
         new_weights = self._process_action(action)
-        
-        # Calculate reward
         reward = self._calculate_reward(new_weights)
-        
-        # Update current weights
         self.current_weights = new_weights.copy()
-        
-        # Move to next time step
         self.current_step += 1
-        
-        # Check if episode is done
+
         terminated = self.current_step >= self.valid_end_idx
         truncated = False
-        
-        # Get new observation
+
         if not terminated:
             obs = self._get_observation()
         else:
             obs = np.zeros(self.observation_space.shape[0], dtype=np.float32)
-        
-        # Info dictionary
+
         info = {
-            'portfolio_value': self.portfolio_value,
-            'weights': self.current_weights.copy(),
-            'step': self.current_step,
-            'net_return': self.returns_history[-1] if self.returns_history else 0.0
+            "portfolio_value": self.portfolio_value,
+            "weights": self.current_weights.copy(),
+            "step": self.current_step,
+            "net_return": self.returns_history[-1] if self.returns_history else 0.0,
         }
-        
         return obs, reward, terminated, truncated, info
-    
-    def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """Reset the environment."""
+
+    def reset(
+        self, seed: Optional[int] = None, options: Optional[Dict] = None
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         if seed is not None:
             np.random.seed(seed)
-        
-        # Reset to random starting point in valid range
-        self.current_step = np.random.randint(self.valid_start_idx, 
-                                            max(self.valid_start_idx + 1, self.valid_end_idx - 100))
-        
-        # Initialize portfolio
-        self.portfolio_value = self.initial_capital
-        
-        # Initialize weights (equal weight or cash-heavy)
-        action_dim = self.n_assets + (1 if self.cash_weight else 0)
-        if self.cash_weight:
-        # Start with small equal weights plus remaining in cash, normalized to sum 1
-            self.current_weights = np.ones(action_dim) * 0.1
-            self.current_weights[-1] = 0.1  # temporary
-            self.current_weights /= np.sum(self.current_weights)  # normalize to sum 1
 
-        else:
-            self.current_weights = np.ones(self.n_assets) / self.n_assets
-        
-        # Reset tracking variables
-        self.returns_history = []
-        
-        # Get initial observation
+        # Random start within valid range, leaving room for at least 100 steps
+        hi = max(self.valid_start_idx + 1, self.valid_end_idx - 100)
+        self.current_step = np.random.randint(self.valid_start_idx, hi)
+
+        self.portfolio_value = self.initial_capital
+        action_dim = self.n_assets + (1 if self.cash_weight else 0)
+        self.current_weights = np.ones(action_dim) / action_dim
+        self.returns_history: List[float] = []
+
         obs = self._get_observation()
-        
         info = {
-            'portfolio_value': self.portfolio_value,
-            'weights': self.current_weights.copy(),
-            'step': self.current_step
+            "portfolio_value": self.portfolio_value,
+            "weights": self.current_weights.copy(),
+            "step": self.current_step,
         }
-        
         return obs, info
-    
-    def render(self, mode: str = 'human'):
-        """Render the environment (optional)."""
-        if mode == 'human':
+
+    def render(self, mode: str = "human"):
+        if mode == "human":
             print(f"Step: {self.current_step}")
             print(f"Portfolio Value: ${self.portfolio_value:,.2f}")
-            print(f"Current Weights: {self.current_weights}")
-            print(f"Returns History Length: {len(self.returns_history)}")
+            print(f"Weights: {self.current_weights}")
             if self.returns_history:
-                print(f"Last Return: {self.returns_history[-1]:.4f}")
+                print(f"Last Return: {self.returns_history[-1]:.6f}")
             print("-" * 50)
