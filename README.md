@@ -36,7 +36,6 @@ LLM_in_portfoliomanagement/
 │   ├── rl_agent/
 │   │   ├── train_ppo.py         # PPO training (split, policy select, multi-seed)
 │   │   ├── eval_ppo.py          # Full evaluation with metrics & visualization
-│   │   ├── eval_ppo_debug.py    # Debug variant with timeouts & diagnostics
 │   │   ├── baselines.py         # Classical portfolio baselines
 │   │   ├── custom_policies.py   # CNN / LSTM feature extractors for SB3
 │   │   └── visualizations.py    # Plotting utilities
@@ -161,7 +160,7 @@ All three use the same PPO optimization; only the feature extractor changes.
 ## Evaluation
 
 ```bash
-python src/rl_agent/eval_ppo_debug.py \
+python src/rl_agent/eval_ppo.py \
     --model-path models/<run>/best_model.zip \
     --data-path data/preprocessed/data_ppo.parquet \
     --n-episodes 10

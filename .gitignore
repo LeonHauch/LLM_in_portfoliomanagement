@@ -3,3 +3,7 @@ __pycache__/
 .env
 *.pyc
 results/
+logs/
+models/ppo_portfolio_*/
+.DS_Store
+*.swp
